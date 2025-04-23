@@ -9,6 +9,7 @@
 #include "esp_camera.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <WebSocketsClient.h>
 
 // Image capture settings
 #define frameHeight 600
@@ -19,7 +20,7 @@
 #define SSID "SSID"
 #define PASSWORD "PASSWORD"
 #define SERVER "192.168.1.100"
-#define PORT 80
+#define PORT 8081
 #define PATH "/upload"
 
 // AI Thinker board pin configuration for ESP32-CAM
@@ -40,6 +41,41 @@
 #define VSYNC_GPIO_NUM 25
 #define HREF_GPIO_NUM 23
 #define PCLK_GPIO_NUM 22
+
+WebSocketsClient webSocket; // Declare WebSocket client instance
+bool webSocketConnected = false;
+
+// WebSocket event handler
+void webSocketEvent(WStype_t type, uint8_t *payload, size_t length)
+{
+    switch (type)
+    {
+    case WStype_DISCONNECTED:
+        Serial.printf("[WSc] Disconnected!\n");
+        webSocketConnected = false;
+        break;
+    case WStype_CONNECTED:
+        Serial.printf("[WSc] Connected to url: %s\n", payload);
+        webSocketConnected = true;
+        // Optionally send a confirmation message or device ID upon connection
+        // webSocket.sendTXT("ESP32-CAM Connected");
+        break;
+    case WStype_TEXT:
+        Serial.printf("[WSc] get text: %s\n", payload);
+        // Handle any text messages received from the server if needed
+        break;
+    case WStype_BIN:
+        Serial.printf("[WSc] get binary length: %u\n", length);
+        // Handle binary messages if needed
+        break;
+    case WStype_ERROR:
+    case WStype_FRAGMENT_TEXT_START:
+    case WStype_FRAGMENT_BIN_START:
+    case WStype_FRAGMENT:
+    case WStype_FRAGMENT_FIN:
+        break;
+    }
+}
 
 void setup()
 {
@@ -83,47 +119,68 @@ void setup()
     // Set frame size to SVGA (800x600)
     config.frame_size = FRAMESIZE_SVGA;
     config.jpeg_quality = 12; // Lower number = higher quality
-    config.fb_count = 1;
+    config.fb_count = 1;      // Use 1 frame buffer
 
     // Initialize the camera
     esp_err_t err = esp_camera_init(&config);
     if (err != ESP_OK)
     {
         Serial.printf("Camera init failed with error 0x%x", err);
+        // Consider restarting or halting
+        ESP.restart();
         return;
     }
+    Serial.println("Camera initialized successfully.");
+
+    // Start WebSocket connection
+    webSocket.begin(SERVER, PORT, PATH);
+    webSocket.onEvent(webSocketEvent);
+    webSocket.setReconnectInterval(5000); // Try to reconnect every 5 seconds
+    Serial.println("WebSocket connection initiated.");
 }
 
 void loop()
 {
-    // Capture a frame
-    camera_fb_t *fb = esp_camera_fb_get();
-    if (!fb)
+    webSocket.loop(); // Keep WebSocket client running
+
+    if (WiFi.status() == WL_CONNECTED && webSocketConnected)
     {
-        Serial.println("Camera capture failed");
-        return;
+        // Capture a frame
+        camera_fb_t *fb = esp_camera_fb_get();
+        if (!fb)
+        {
+            Serial.println("Camera capture failed");
+            // Maybe add a small delay before retrying
+            delay(100);
+            return;
+        }
+
+        // Send the image frame buffer via WebSocket as binary data
+        if (webSocket.sendBIN(fb->buf, fb->len))
+        {
+            Serial.printf("Sent frame: %u bytes\n", fb->len);
+        }
+        else
+        {
+            Serial.println("Error sending frame via WebSocket");
+        }
+
+        // Return the frame buffer for reuse
+        esp_camera_fb_return(fb);
+
+        // Add a small delay if needed to control the frame rate
+        // delay(1000 / targetFPS); // Uncomment and adjust if specific FPS is desired
     }
-
-    // Create HTTP POST request to send the image
-    HTTPClient http;
-    String url = "http://" + String(SERVER) + ":" + String(PORT) + PATH;
-    http.begin(url);
-    http.addHeader("Content-Type", "image/jpeg");
-
-    int httpResponseCode = http.POST(fb->buf, fb->len);
-    if (httpResponseCode > 0)
+    else if (WiFi.status() != WL_CONNECTED)
     {
-        Serial.printf("HTTP Response code: %d\n", httpResponseCode);
+        Serial.println("WiFi disconnected. Waiting for reconnection...");
+        // WebSocket client will attempt reconnection automatically
+        delay(1000); // Wait before checking again
     }
-    else
+    else if (!webSocketConnected)
     {
-        Serial.printf("Error sending POST: %s\n", http.errorToString(httpResponseCode).c_str());
+        Serial.println("WebSocket disconnected. Waiting for reconnection...");
+        // WebSocket client handles reconnection attempts
+        delay(1000); // Wait before checking again
     }
-    http.end();
-
-    // Return the frame buffer for reuse
-    esp_camera_fb_return(fb);
-
-    // Delay to approximate targetFPS (30fps = ~33ms per frame)
-    delay(1000 / targetFPS);
 }
