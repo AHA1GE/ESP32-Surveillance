@@ -72,7 +72,7 @@ void initWiFi() {
   wifiMulti.setStrictMode(false);                           // Default is true.  Library will disconnect and forget currently connected AP if it's not in the AP list.
   wifiMulti.setAllowOpenAP(true);                           // Default is false.  True adds open APs to the AP list.
   wifiMulti.setConnectionTestCallbackFunc(testConnection);  // Attempts to connect to a remote webserver in case of captive portals.
-  
+
   Serial.println("Wi-Fi Connecting...");
 }
 
@@ -120,7 +120,6 @@ bool initCAM() {
   }
   esp_err_t err = esp_camera_init(&config);  // Initialize the camera
   if (err == ESP_OK) {
-    Serial.println("Camera ready.");
     return true;
   } else {
     Serial.printf("Camera init failed with error 0x%x. ", err);
@@ -128,8 +127,19 @@ bool initCAM() {
   }
 }
 
+void blinkLed(int times, int onDuration = 50, int offDuration = 200) {
+  for (int i = 0; i < times; i++) {
+    digitalWrite(LED_GPIO_NUM, HIGH);  // Turn the LED on
+    delay(onDuration);                 // Wait for a while
+    digitalWrite(LED_GPIO_NUM, LOW);   // Turn the LED off
+    delay(offDuration);                // Wait for a while
+  }
+}
+
 void setup() {
   Serial.begin(115200);
+  pinMode(LED_GPIO_NUM, OUTPUT);
+  digitalWrite(LED_GPIO_NUM, LOW);
   // Wi-Fi
   initWiFi();
   static bool isConnected = false;
@@ -137,7 +147,8 @@ void setup() {
     uint8_t WiFiStatus = wifiMulti.run(5000, true);  // 10s per ssid, scan hidden = true
     if (WiFiStatus == WL_CONNECTED) {
       isConnected = true;
-      Serial.printf("Wi-Fi Connected:\n SSID: %s\n PASS: %s\n IP: %s\n", WiFi.SSID().c_str(), WiFi.psk().c_str(), WiFi.localIP().toString().c_str());
+      Serial.printf("Wi-Fi Connected:\n  SSID:\t%s\n  PASS:\t%s\n  IP:\t%s\n", WiFi.SSID().c_str(), WiFi.psk().c_str(), WiFi.localIP().toString().c_str());
+      blinkLed(1, 50, 450);
     }
   }
   // CAM
@@ -147,6 +158,9 @@ void setup() {
     if (!isCamReady) {
       Serial.println("Retry in 5s");
       delay(5000);  // Wait before retrying
+    } else {
+      Serial.println("Camera ready.");
+      blinkLed(2);
     }
   }
   // WebSocket
@@ -156,6 +170,7 @@ void setup() {
     isWsConnected = wsClient.ping() == 0;
     if (isWsConnected) {
       Serial.println("WebSocket connected.");
+      blinkLed(3);
     } else {
       Serial.println("WebSocket connection failed. Retry in 5s.");
       delay(5000);  // Wait before retrying
@@ -175,6 +190,7 @@ void loop() {
     wsClient.beginMessage(TYPE_BINARY);
     wsClient.write(fb->buf, fb->len);  // Send the image data
     wsClient.endMessage();
+    // Serial.println("fb sent on ws.");
 
     esp_camera_fb_return(fb);  // Return the frame buffer for reuse
 
