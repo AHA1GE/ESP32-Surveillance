@@ -39,7 +39,7 @@
 #define frameWidth 800
 #define targetFPS 30
 
-#define wsServerAddress "192.168.1.102"
+#define wsServerAddress "192.168.1.111"
 #define wsServerPort 8081
 #define wsServerPath "/upload"
 
