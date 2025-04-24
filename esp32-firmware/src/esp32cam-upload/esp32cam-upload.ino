@@ -170,7 +170,8 @@ void setup() {
     if (wsClient.ping() == 0) {
       Serial.println("WebSocket ping sent.");
       // ping sent, wait for pong
-      char buffer[128];
+      char buffer[64];
+      buffer[0] = '\0';  // Initialize buffer
       int len = wsClient.readBytes(buffer, sizeof(buffer) - 1);
       if (len > 0) {
         buffer[len] = '\0';  // Null-terminate the string
