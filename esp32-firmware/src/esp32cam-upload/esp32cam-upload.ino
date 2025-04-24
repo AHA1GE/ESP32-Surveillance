@@ -53,6 +53,19 @@ void initWiFi() {
   Serial.print("Connecting Wifi.");
 }
 
+bool initCAM() {
+  extern const camera_config_t config;
+  esp_err_t err = esp_camera_init(&config);  // Initialize the camera
+  if (err == ESP_OK) {
+    Serial.println("Camera initialized successfully.");
+    return true;
+  } else {
+    Serial.printf("Camera init failed with error 0x%x", err);
+    ESP.restart();
+    return false;
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   initWiFi();
@@ -62,22 +75,18 @@ void setup() {
     if (WiFiStatus == WL_CONNECTED) {
       isConnected = true;
       Serial.println("Connected to WiFi.");
-    } 
+    }
   }
   Serial.printf("ESP32 IP Address: %s\n", WiFi.localIP().toString().c_str());
 
-  // Configure camera settings
-  extern const camera_config_t config;
-
-  // Initialize the camera
-  esp_err_t err = esp_camera_init(&config);
-  if (err != ESP_OK) {
-    Serial.printf("Camera init failed with error 0x%x", err);
-    // Consider restarting or halting
-    ESP.restart();
-    return;
+  static bool isCamReady = false;
+  while (!isCamReady) {
+    isCamReady = initCAM();  // Initialize the camera
+    if (!isCamReady) {
+      Serial.println("Retry in 5s");
+      delay(5000);  // Wait before retrying
+    }
   }
-  Serial.println("Camera initialized successfully.");
 
   // Start WebSocket connection
   wsClient.begin(wsServerPath);

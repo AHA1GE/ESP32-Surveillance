@@ -7,8 +7,8 @@
 #define CAM_PIN_PWDN -1
 #define CAM_PIN_RESET 32
 #define CAM_PIN_XCLK 0
-#define CAM_PIN_SIOD 26
-#define CAM_PIN_SIOC 27
+#define CAM_PIN_SDA 26
+#define CAM_PIN_SCL 27
 #define CAM_PIN_D7 35
 #define CAM_PIN_D6 34
 #define CAM_PIN_D5 39
@@ -68,8 +68,8 @@ static const camera_config_t config = {
     .pin_pwdn = CAM_PIN_PWDN,
     .pin_reset = CAM_PIN_RESET,
     .pin_xclk = CAM_PIN_XCLK,
-    .pin_sccb_sda = CAM_PIN_SIOD,
-    .pin_sccb_scl = CAM_PIN_SIOC,
+    .pin_sccb_sda = CAM_PIN_SDA,
+    .pin_sccb_scl = CAM_PIN_SCL,
     .pin_d7 = CAM_PIN_D7,
     .pin_d6 = CAM_PIN_D6,
     .pin_d5 = CAM_PIN_D5,
