@@ -39,7 +39,7 @@
 #define frameWidth 800
 #define targetFPS 30
 
-#define wsServerAddress "192.168.1.100"
+#define wsServerAddress "192.168.1.111"
 #define wsServerPort 8081
 #define wsServerPath "/upload"
 
@@ -167,12 +167,22 @@ void setup() {
   wsClient.begin(wsServerPath);
   static bool isWsConnected = false;
   while (!isWsConnected) {
-    isWsConnected = wsClient.ping() == 0;
-    if (isWsConnected) {
-      Serial.println("WebSocket connected.");
-      blinkLed(3);
+    if (wsClient.ping() == 0) {
+      Serial.println("WebSocket ping sent.");
+      // ping sent, wait for pong
+      char buffer[128];
+      int len = wsClient.readBytes(buffer, sizeof(buffer) - 1);
+      if (len > 0) {
+        buffer[len] = '\0';  // Null-terminate the string
+        Serial.printf("WebSocket connected: %s\n", buffer);
+        isWsConnected = true;
+        blinkLed(3);
+      } else {
+        Serial.println("WebSocket connection failed. Retry in 5s.");
+        delay(5000);  // Wait before retrying
+      }
     } else {
-      Serial.println("WebSocket connection failed. Retry in 5s.");
+      Serial.println("WebSocket send ping failed. Retry in 5s.");
       delay(5000);  // Wait before retrying
     }
   }
