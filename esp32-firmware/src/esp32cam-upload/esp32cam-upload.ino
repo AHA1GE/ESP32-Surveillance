@@ -6,181 +6,103 @@
  */
 
 #include <Arduino.h>
-#include "esp_camera.h"
+// #include "esp_camera.h"
 #include <WiFi.h>
+#include <WiFiMulti.h>
 #include <HTTPClient.h>
-#include <WebSocketsClient.h>
+#include <ArduinoHttpClient.h>
+#include "cam-config.h"
 
 // Image capture settings
 #define frameHeight 600
 #define frameWidth 800
 #define targetFPS 30
 
-// WiFi and Server settings
-#define SSID "SSID"
-#define PASSWORD "PASSWORD"
-#define SERVER "192.168.1.100"
-#define PORT 8081
-#define PATH "/upload"
+#define wsServerAddress "192.168.1.100"
+#define wsServerPort 8081
+#define wsServerPath "/upload"
 
-// AI Thinker board pin configuration for ESP32-CAM
-#define PWDN_GPIO_NUM 32
-#define RESET_GPIO_NUM -1
-#define XCLK_GPIO_NUM 0
-#define SIOD_GPIO_NUM 26
-#define SIOC_GPIO_NUM 27
+const char *WIFI_LIST[3][2] = {
+  { "TEST", "00000000" },
+  { "ZT", "ztMODEL168!#" },
+  { "FW_FAST", "ff702543702" },
+};
 
-#define Y9_GPIO_NUM 35
-#define Y8_GPIO_NUM 34
-#define Y7_GPIO_NUM 39
-#define Y6_GPIO_NUM 36
-#define Y5_GPIO_NUM 21
-#define Y4_GPIO_NUM 19
-#define Y3_GPIO_NUM 18
-#define Y2_GPIO_NUM 5
-#define VSYNC_GPIO_NUM 25
-#define HREF_GPIO_NUM 23
-#define PCLK_GPIO_NUM 22
+WiFiMulti wifiMulti;
+WiFiClient wifiClientInstance;
+WebSocketClient wsClient = WebSocketClient(wifiClientInstance, wsServerAddress, wsServerPort);  // Declare WebSocket client instance
 
-WebSocketsClient webSocket; // Declare WebSocket client instance
-bool webSocketConnected = false;
-
-// WebSocket event handler
-void webSocketEvent(WStype_t type, uint8_t *payload, size_t length)
-{
-    switch (type)
-    {
-    case WStype_DISCONNECTED:
-        Serial.printf("[WSc] Disconnected!\n");
-        webSocketConnected = false;
-        break;
-    case WStype_CONNECTED:
-        Serial.printf("[WSc] Connected to url: %s\n", payload);
-        webSocketConnected = true;
-        // Optionally send a confirmation message or device ID upon connection
-        // webSocket.sendTXT("ESP32-CAM Connected");
-        break;
-    case WStype_TEXT:
-        Serial.printf("[WSc] get text: %s\n", payload);
-        // Handle any text messages received from the server if needed
-        break;
-    case WStype_BIN:
-        Serial.printf("[WSc] get binary length: %u\n", length);
-        // Handle binary messages if needed
-        break;
-    case WStype_ERROR:
-    case WStype_FRAGMENT_TEXT_START:
-    case WStype_FRAGMENT_BIN_START:
-    case WStype_FRAGMENT:
-    case WStype_FRAGMENT_FIN:
-        break;
-    }
+bool testConnection() {
+  HTTPClient http;
+  http.begin("http://captive.apple.com");
+  int httpCode = http.GET();
+  // expect to get 200 (OK) or 301 (https upgrade) response code
+  if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY) {
+    return true;
+  }
+  return false;
 }
 
-void setup()
-{
-    Serial.begin(115200);
-
-    // Initialize WiFi
-    WiFi.begin(SSID, PASSWORD);
-    Serial.println("Connecting to WiFi...");
-    while (WiFi.status() != WL_CONNECTED)
-    {
-        delay(500);
-        Serial.print(".");
-    }
-    Serial.println("\nWiFi connected");
-    Serial.print("IP Address: ");
-    Serial.println(WiFi.localIP());
-
-    // Configure camera settings
-    camera_config_t config;
-    config.ledc_channel = LEDC_CHANNEL_0;
-    config.ledc_timer = LEDC_TIMER_0;
-    config.pin_d0 = Y2_GPIO_NUM;
-    config.pin_d1 = Y3_GPIO_NUM;
-    config.pin_d2 = Y4_GPIO_NUM;
-    config.pin_d3 = Y5_GPIO_NUM;
-    config.pin_d4 = Y6_GPIO_NUM;
-    config.pin_d5 = Y7_GPIO_NUM;
-    config.pin_d6 = Y8_GPIO_NUM;
-    config.pin_d7 = Y9_GPIO_NUM;
-    config.pin_xclk = XCLK_GPIO_NUM;
-    config.pin_pclk = PCLK_GPIO_NUM;
-    config.pin_vsync = VSYNC_GPIO_NUM;
-    config.pin_href = HREF_GPIO_NUM;
-    config.pin_sscb_sda = SIOD_GPIO_NUM;
-    config.pin_sscb_scl = SIOC_GPIO_NUM;
-    config.pin_pwdn = PWDN_GPIO_NUM;
-    config.pin_reset = RESET_GPIO_NUM;
-    config.xclk_freq_hz = 20000000; // 20MHz clock
-    config.pixel_format = PIXFORMAT_JPEG;
-
-    // Set frame size to SVGA (800x600)
-    config.frame_size = FRAMESIZE_SVGA;
-    config.jpeg_quality = 12; // Lower number = higher quality
-    config.fb_count = 1;      // Use 1 frame buffer
-
-    // Initialize the camera
-    esp_err_t err = esp_camera_init(&config);
-    if (err != ESP_OK)
-    {
-        Serial.printf("Camera init failed with error 0x%x", err);
-        // Consider restarting or halting
-        ESP.restart();
-        return;
-    }
-    Serial.println("Camera initialized successfully.");
-
-    // Start WebSocket connection
-    webSocket.begin(SERVER, PORT, PATH);
-    webSocket.onEvent(webSocketEvent);
-    webSocket.setReconnectInterval(5000); // Try to reconnect every 5 seconds
-    Serial.println("WebSocket connection initiated.");
+void initWiFi() {
+  for (int i = 0; i < 3; i++) {
+    wifiMulti.addAP(WIFI_LIST[i][0], WIFI_LIST[i][1]);
+  }
+  wifiMulti.setStrictMode(false);                           // Default is true.  Library will disconnect and forget currently connected AP if it's not in the AP list.
+  wifiMulti.setAllowOpenAP(true);                           // Default is false.  True adds open APs to the AP list.
+  wifiMulti.setConnectionTestCallbackFunc(testConnection);  // Attempts to connect to a remote webserver in case of captive portals.
+  Serial.print("Connecting Wifi.");
 }
 
-void loop()
-{
-    webSocket.loop(); // Keep WebSocket client running
+void setup() {
+  Serial.begin(115200);
+  initWiFi();
+  static bool isConnected = false;
+  while (!isConnected) {
+    uint8_t WiFiStatus = wifiMulti.run(5000, true);  // 10s per ssid, scan hidden = true
+    if (WiFiStatus == WL_CONNECTED) {
+      isConnected = true;
+      Serial.println("Connected to WiFi.");
+    } 
+  }
+  Serial.printf("ESP32 IP Address: %s\n", WiFi.localIP().toString().c_str());
 
-    if (WiFi.status() == WL_CONNECTED && webSocketConnected)
-    {
-        // Capture a frame
-        camera_fb_t *fb = esp_camera_fb_get();
-        if (!fb)
-        {
-            Serial.println("Camera capture failed");
-            // Maybe add a small delay before retrying
-            delay(100);
-            return;
-        }
+  // Configure camera settings
+  extern const camera_config_t config;
 
-        // Send the image frame buffer via WebSocket as binary data
-        if (webSocket.sendBIN(fb->buf, fb->len))
-        {
-            Serial.printf("Sent frame: %u bytes\n", fb->len);
-        }
-        else
-        {
-            Serial.println("Error sending frame via WebSocket");
-        }
+  // Initialize the camera
+  esp_err_t err = esp_camera_init(&config);
+  if (err != ESP_OK) {
+    Serial.printf("Camera init failed with error 0x%x", err);
+    // Consider restarting or halting
+    ESP.restart();
+    return;
+  }
+  Serial.println("Camera initialized successfully.");
 
-        // Return the frame buffer for reuse
-        esp_camera_fb_return(fb);
+  // Start WebSocket connection
+  wsClient.begin(wsServerPath);
+  Serial.println("WebSocket connection initiated.");
+}
 
-        // Add a small delay if needed to control the frame rate
-        // delay(1000 / targetFPS); // Uncomment and adjust if specific FPS is desired
+void loop() {
+  if (WiFi.status() == WL_CONNECTED) {
+    camera_fb_t *fb = esp_camera_fb_get();  // Capture a frame
+    if (!fb) {
+      Serial.println("Camera capture failed");
+      delay(100);  // small delay before retrying
+      return;
     }
-    else if (WiFi.status() != WL_CONNECTED)
-    {
-        Serial.println("WiFi disconnected. Waiting for reconnection...");
-        // WebSocket client will attempt reconnection automatically
-        delay(1000); // Wait before checking again
-    }
-    else if (!webSocketConnected)
-    {
-        Serial.println("WebSocket disconnected. Waiting for reconnection...");
-        // WebSocket client handles reconnection attempts
-        delay(1000); // Wait before checking again
-    }
+
+    wsClient.beginMessage(TYPE_BINARY);
+    wsClient.write(fb->buf, fb->len);  // Send the image data
+    wsClient.endMessage();
+
+    esp_camera_fb_return(fb);  // Return the frame buffer for reuse
+
+    // delay(1000 / targetFPS); // Uncomment and adjust if specific FPS is desired
+  } else {
+    Serial.println("WiFi disconnected. Rebooting...");
+    esp_camera_deinit();  // Deinitialize camera before rebooting
+    ESP.restart();        // software reset
+  }
 }

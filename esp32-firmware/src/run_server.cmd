@@ -1,2 +1,2 @@
 pip install websockets
-python server.py
+python wsServer.py
