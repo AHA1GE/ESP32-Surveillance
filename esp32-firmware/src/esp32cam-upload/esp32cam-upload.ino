@@ -170,12 +170,9 @@ void setup() {
     if (wsClient.ping() == 0) {
       Serial.println("WebSocket ping sent.");
       // ping sent, wait for pong
-      char buffer[64];
-      buffer[0] = '\0';  // Initialize buffer
-      int len = wsClient.readBytes(buffer, sizeof(buffer) - 1);
-      if (len > 0) {
-        buffer[len] = '\0';  // Null-terminate the string
-        Serial.printf("WebSocket connected: %s\n", buffer);
+      int messageSize = wsClient.parseMessage();
+      if (messageSize > 0) {
+        Serial.printf("WebSocket connected: %s\n", wsClient.readString());
         isWsConnected = true;
         blinkLed(3);
       } else {
@@ -191,21 +188,22 @@ void setup() {
 
 void loop() {
   if (WiFi.status() == WL_CONNECTED) {
-    camera_fb_t *fb = esp_camera_fb_get();  // Capture a frame
-    if (!fb) {
-      Serial.println("Camera capture failed");
-      delay(100);  // small delay before retrying
-      return;
+    if (wsClient.connected()) {
+      camera_fb_t *fb = esp_camera_fb_get();  // Capture a frame
+      if (!fb) {
+        Serial.println("Camera capture failed");
+        delay(100);  // small delay before retrying
+        return;
+      }
+      wsClient.beginMessage(TYPE_BINARY);
+      wsClient.write(fb->buf, fb->len);  // Send the image data
+      wsClient.endMessage();
+      // Serial.println("fb sent on ws.");
+      esp_camera_fb_return(fb);  // Return the frame buffer for reuse
+      // delay(1000 / targetFPS); // Uncomment and adjust if specific FPS is desired
+    } else {
+      wsClient.begin(wsServerPath);
     }
-
-    wsClient.beginMessage(TYPE_BINARY);
-    wsClient.write(fb->buf, fb->len);  // Send the image data
-    wsClient.endMessage();
-    // Serial.println("fb sent on ws.");
-
-    esp_camera_fb_return(fb);  // Return the frame buffer for reuse
-
-    // delay(1000 / targetFPS); // Uncomment and adjust if specific FPS is desired
   } else {
     Serial.println("WiFi disconnected. Rebooting...");
     esp_camera_deinit();  // Deinitialize camera before rebooting
