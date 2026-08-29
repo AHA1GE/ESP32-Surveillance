@@ -4,7 +4,7 @@
 #include <esp_http_client.h>
 #include <esp_https_ota.h>
 #include <esp_crt_bundle.h>
-#include <cjson/cJSON.h>
+#include <cJSON.h>
 #include <string.h>
 #include <stdio.h>
 

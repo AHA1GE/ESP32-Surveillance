@@ -68,15 +68,17 @@ void app_main(void)
 
     xTaskCreatePinnedToCore(streaming_task, "streaming", 4096, ws_client, 5, NULL, 1);
 
-    if (CONFIG_ENABLE_AUTO_OTA) {
-        ESP_LOGI(TAG, "OTA is enabled, but auto-check is not yet implemented");
-        ESP_LOGI(TAG, "To use OTA: call ota_check_latest_release() periodically from a timer");
+    // A disabled bool Kconfig option isn't defined as 0 - it's not defined at
+    // all - so this has to be a preprocessor check, not a runtime "if".
+#if CONFIG_ENABLE_AUTO_OTA
+    ESP_LOGI(TAG, "OTA is enabled, but auto-check is not yet implemented");
+    ESP_LOGI(TAG, "To use OTA: call ota_check_latest_release() periodically from a timer");
 
-        ota_release_info_t release_info = {0};
-        esp_err_t ota_err = ota_check_latest_release(CONFIG_OTA_GITHUB_OWNER, CONFIG_OTA_GITHUB_REPO, &release_info);
-        if (ota_err == ESP_OK && release_info.update_available) {
-            ESP_LOGI(TAG, "Update available: %s", release_info.tag_name);
-            ESP_LOGI(TAG, "URL: %s", release_info.url);
-        }
+    ota_release_info_t release_info = {0};
+    esp_err_t ota_err = ota_check_latest_release(CONFIG_OTA_GITHUB_OWNER, CONFIG_OTA_GITHUB_REPO, &release_info);
+    if (ota_err == ESP_OK && release_info.update_available) {
+        ESP_LOGI(TAG, "Update available: %s", release_info.tag_name);
+        ESP_LOGI(TAG, "URL: %s", release_info.url);
     }
+#endif
 }
