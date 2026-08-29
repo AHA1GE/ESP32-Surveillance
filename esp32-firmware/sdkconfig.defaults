@@ -1,0 +1,21 @@
+# PSRAM configuration
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_QUAD=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# Partition table: OTA-capable with two OTA slots
+CONFIG_PARTITION_TABLE_TWO_OTA=y
+
+# TLS certificate bundle for HTTPS
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT=y
+
+# Logging
+CONFIG_LOG_DEFAULT_LEVEL=2
+
+# App startup
+CONFIG_ESP_SYSTEM_EVENT_QUEUE_SIZE=32
+
+# The inert OTA check path (cJSON parse of the GitHub releases API response)
+# runs on the main task; give it more headroom than the 3584B default.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

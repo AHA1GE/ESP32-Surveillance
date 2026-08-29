@@ -1,0 +1,53 @@
+menu "ESP32 Surveillance Firmware Configuration"
+
+    config WIFI_SSID
+        string "WiFi SSID"
+        default ""
+        help
+            SSID (network name) to connect to
+
+    config WIFI_PASSWORD
+        string "WiFi Password"
+        default ""
+        help
+            WiFi password
+
+    config BACKEND_HOST
+        string "Backend Server Host"
+        default "192.168.1.111"
+        help
+            Hostname or IP address of the WebSocket backend server
+
+    config BACKEND_PORT
+        int "Backend Server Port"
+        default 8080
+        help
+            Port number for the WebSocket backend server
+
+    config DEVICE_ID
+        string "Device ID"
+        default "cam1"
+        help
+            Unique identifier for this camera device (used in WebSocket connection URL)
+
+    config OTA_GITHUB_OWNER
+        string "GitHub Repository Owner"
+        default ""
+        help
+            GitHub username or organization for OTA release checks
+
+    config OTA_GITHUB_REPO
+        string "GitHub Repository Name"
+        default ""
+        help
+            GitHub repository name for OTA release checks
+
+    config ENABLE_AUTO_OTA
+        bool "Enable Automatic OTA Updates"
+        default n
+        help
+            If enabled, periodically check for and apply firmware updates from GitHub releases.
+            Note: This is currently inactive by default; enable via menuconfig and add a periodic
+            timer callback in app_main() for actual operation.
+
+endmenu

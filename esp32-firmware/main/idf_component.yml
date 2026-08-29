@@ -1,0 +1,11 @@
+version: "1.0.0"
+description: "ESP32-CAM WebSocket streaming firmware"
+
+dependencies:
+  espressif/esp32-camera: "*"
+  espressif/esp_websocket_client: "*"
+  espressif/cjson: "*"
+  idf: ">=5.1"
+
+metadata:
+  version: 1

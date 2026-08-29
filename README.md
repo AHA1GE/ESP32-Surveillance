@@ -1,84 +1,65 @@
 # ESP32 Surveillance Platform
 
-A surveillance platform using one or more ESP32-CAM modules (with OV2640) and a backend server to capture, process, and generate video clips from live image streams.
+A surveillance platform using one or more ESP32-CAM modules (OV2640) and a
+backend server that turns their live JPEG streams into a near-real-time
+viewable stream plus a browsable recorded history.
 
-## Overview
+## Architecture
 
-This project aims to create a scalable surveillance system with the following capabilities:
+- **Firmware** ([esp32-firmware/](esp32-firmware/)) - native ESP-IDF (C), not Arduino. Captures
+  JPEG frames from the OV2640 and pushes them over an outbound WebSocket
+  connection to the backend. Built entirely by CI - see below.
+- **Backend** ([backend/](backend/)) - Go. Accepts WebSocket connections from any number of
+  devices, feeds each device's frames into a dedicated `ffmpeg` process, and
+  serves a live HLS stream plus a recorded MP4 archive per device. Ships as a
+  Docker image.
+- **CI** ([.github/workflows/](.github/workflows/)) - GitHub Actions is the only build path for both
+  sides. Firmware builds produce a downloadable `.bin`; tag pushes also
+  attach it to a GitHub Release. Backend builds run `go vet`/`go test` and
+  publish a multi-arch Docker image to GHCR.
 
-- **ESP32-CAM Module:** Capture JPEG images at a configurable resolution (e.g., 800×600) and frame rate (target 30fps).
-- **Backend Server:** A Python-based server that receives images from the ESP32 devices, stores them, and automatically generates a video clip (e.g., 10 seconds of video at 30fps) once the required number of images is received.
-- **Scalability:** Designed to support multiple ESP32-CAM devices with future transition to a serverless architecture and cloud-based storage/databases.
+Each camera dials out to the backend rather than the backend polling
+cameras - that's what lets multiple devices join without any backend-side
+configuration, and lets a camera keep working across DHCP lease changes.
 
-## Features
+## Getting started
 
-- **ESP32 Firmware:**
+### Firmware
 
-  - Developed using VS Code with the Arduino extension.
-  - Configurable image capture (resolution and fps).
-  - Upload images via HTTP/HTTPS to a backend server.
-  - Includes basic error handling and retry mechanisms.
+1. `cd esp32-firmware && idf.py menuconfig` -> "ESP32 Surveillance Firmware
+   Configuration" - set your WiFi SSID/password, the backend host:port, and
+   a unique device ID for this camera.
+2. Build via CI: push/open a PR and download the `firmware` artifact from
+   the `Firmware` workflow run (or run `idf.py build` locally if you have
+   the ESP-IDF toolchain installed).
+3. Flash once over USB: `esptool.py write_flash @flash_args` from the
+   downloaded build, or `idf.py -p <PORT> flash` locally.
 
-- **Backend Server (Prototype):**
+Firmware updates are manual for now (reflash over USB). The OTA path
+(`main/ota.c`) is implemented but inert - enabling `CONFIG_ENABLE_AUTO_OTA`
+plus wiring a periodic timer is the intended way to switch a device over to
+self-updating from the latest GitHub Release later, without further
+restructuring.
 
-  - Python-based REST API for receiving image uploads.
-  - Temporary storage of images organized by device and timestamp.
-  - Video generation using libraries such as OpenCV or FFmpeg.
-  - Multi-device support with tagging (device IDs).
+### Backend
 
-- **Future Enhancements:**
-  - Transition to serverless functions (e.g., AWS Lambda, Google Cloud Functions).
-  - Integration with cloud storage (e.g., AWS S3) and cloud databases.
-  - Improved security and network resiliency features.
-  - Real-time monitoring and logging for performance optimization.
+```bash
+docker run -p 8080:8080 -v ./data:/storage ghcr.io/aha1ge/esp32-surveillance/backend:latest
+```
 
-## Getting Started
-
-### Prerequisites
-
-- **Hardware:**
-
-  - ESP32-CAM module with OV2640 camera.
-  - Backend PC/server for development and testing.
-
-- **Software:**
-  - [Visual Studio Code](https://code.visualstudio.com/) with the Arduino plugin.
-  - Arduino IDE (if preferred) for ESP32 development.
-  - Python 3.x and necessary libraries (e.g., Flask/FastAPI, OpenCV, or FFmpeg bindings).
-
-### Setup
-
-1. **ESP32 Firmware:**
-
-   - Clone the repository and open the project in VS Code.
-   - Configure your ESP32-CAM settings (WiFi credentials, target resolution, fps, and backend URL) in the firmware code.
-   - Upload the firmware to your ESP32-CAM module.
-
-2. **Python Backend:**
-
-   - Navigate to the backend directory.
-   - Install required Python dependencies using:
-     ```bash
-     pip install -r requirements.txt
-     ```
-   - Run the server locally:
-     ```bash
-     python app.py
-     ```
-   - Ensure the API endpoint (e.g., `/upload`) is reachable and properly receives image data.
-
-3. **Testing:**
-   - Use your ESP32-CAM module to start sending JPEG images to the backend.
-   - Monitor the backend logs and verify that images are stored.
-   - Once the configured number of images (e.g., 300 for 10 seconds at 30fps) is received, the video generation process should be triggered.
+See [backend/README.md](backend/README.md) for configuration and endpoints.
+Once a device is streaming, open `http://<backend>:8080/live/<deviceID>/index.m3u8`
+in VLC (or any HLS-capable player) to watch live; recorded clips are listed
+at `http://<backend>:8080/archive/<deviceID>`.
 
 ## Roadmap
 
-see [ROADMAP.md](ROADMAP.md)
+See [ROADMAP.md](ROADMAP.md).
 
 ## Contributing
 
-Contributions and feedback are welcome. Please open an issue or submit a pull request with your suggestions.
+Contributions and feedback are welcome. Please open an issue or submit a
+pull request with your suggestions.
 
 ## License
 

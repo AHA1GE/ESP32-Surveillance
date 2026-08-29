@@ -1,0 +1,9 @@
+.git
+.github
+.gitignore
+README.md
+*.md
+.env
+.env.local
+go.sum
+storage

@@ -1,58 +1,51 @@
 # Roadmap
 
-This document outlines the planned development phases and key milestones for the ESP32 Surveillance Platform.
+The platform was rebuilt from scratch on native ESP-IDF firmware and a Go
+backend, both built exclusively via GitHub Actions. The milestones below
+were implemented together as a single rearchitecture; hardware verification
+(marked separately) still needs a real device.
 
-## Phase 1: Prototype Development
+## Implemented
 
-- **ESP32 Firmware:**
+- [x] ESP-IDF firmware: WiFi, OV2640 capture (PSRAM, dual frame buffer),
+      outbound WebSocket streaming to the backend.
+- [x] OTA-capable partition table (two OTA slots) from day one, so enabling
+      OTA later never requires a reflash just to change the partition layout.
+- [x] Go backend: per-device WebSocket ingest, one `ffmpeg` process per
+      device piping frames straight to disk-backed output (no intermediate
+      loose JPEG files).
+- [x] Live viewing via a rolling HLS window per device.
+- [x] Recorded history via independent archive segments plus a retention
+      sweep.
+- [x] Multi-device support: devices are auto-registered by ID on first
+      connection, no backend configuration needed per camera.
+- [x] OTA stub: `ota_check_latest_release()`/`ota_apply()` implemented
+      against the GitHub Releases API, gated inert behind
+      `CONFIG_ENABLE_AUTO_OTA` (default off).
+- [x] CI: firmware builds on every push and attaches the `.bin` to a GitHub
+      Release on tag push; backend tests + publishes a multi-arch Docker
+      image to GHCR.
 
-  - [x] Set up development environment (VS Code with Arduino plugin).
-  - [x] Implement basic image capture using the OV2640.
-  - [x] Configure image capture parameters (resolution, fps).
-  - [x] Develop network communication to upload images to the backend.
-  - [ ] Integrate error handling and retry mechanisms for unstable network conditions.
+## Needs hardware to verify
 
-- **Python Backend (Prototype):**
-  - [x] Set up a basic RESTful API endpoint (e.g., `/upload`) to receive JPEG images.
-  - [x] Store received images in an organized directory structure (by device and timestamp).
-  - [ ] Implement a check to detect when the configured number of images has been reached.
-  - [ ] Integrate video generation using OpenCV or FFmpeg once enough images are collected.
-  - [ ] Clean up temporary storage (delete images post video generation).
+- [ ] Flash a real AI-Thinker ESP32-CAM and confirm camera init succeeds
+      with PSRAM enabled (this is the setting the old Arduino firmware got
+      wrong).
+- [ ] Confirm sustained frame rate/quality over real WiFi into the live HLS
+      view.
+- [ ] Run two physical devices with different device IDs simultaneously and
+      confirm independent live/archive output.
+- [ ] Tag a release, confirm the GitHub Release gets the `.bin` attached,
+      and manually exercise `ota_apply()` once before ever enabling
+      `CONFIG_ENABLE_AUTO_OTA` unattended.
 
-## Phase 2: Optimization & Multi-Device Support
+## Future
 
-- **Performance Tuning:**
-
-  - [ ] Test and optimize the performance of the ESP32-CAM (adjust resolution/fps as needed).
-  - [ ] Improve network throughput and reliability.
-  - [ ] Optimize file I/O and image processing in the backend.
-
-- **Multi-Device Handling:**
-  - [ ] Implement device identification in image uploads.
-  - [ ] Ensure concurrent image processing and video generation for multiple devices.
-  - [ ] Develop monitoring tools to track performance and system health.
-
-## Phase 3: Transition to Cloud & Serverless Architecture
-
-- **Cloud Migration:**
-
-  - [ ] Transition the image receiving API to serverless functions (AWS Lambda, Azure Functions, etc.).
-  - [ ] Move temporary storage to a cloud storage solution (e.g., AWS S3).
-  - [ ] Integrate a cloud-based database to track image metadata and video generation status.
-
-- **Serverless Video Generation:**
-  - [ ] Develop cloud-based processing functions for video creation.
-  - [ ] Implement triggering mechanisms (e.g., using message queues) to start video generation once image thresholds are met.
-  - [ ] Automate cleanup of raw images post video generation.
-
-## Phase 4: Security & Reliability Enhancements
-
-- **Security Improvements:**
-
-  - [ ] Secure communications between ESP32 devices and the backend (e.g., implement TLS).
-  - [ ] Add authentication mechanisms for API endpoints to prevent unauthorized uploads.
-
-- **Reliability & Monitoring:**
-  - [ ] Integrate logging and monitoring solutions for both hardware and backend services.
-  - [ ] Set up automated alerts for system failures or performance issues.
-  - [ ] Regularly review and update the system based on user feedback and performance metrics.
+- [ ] Wire `CONFIG_ENABLE_AUTO_OTA` to an actual periodic timer instead of a
+      one-shot check at boot.
+- [ ] WiFi provisioning without a reflash (NVS + BLE/SoftAP), instead of
+      Kconfig-time credentials.
+- [ ] Authentication in front of the live/archive HTTP endpoints - there is
+      currently none, matching the old system's scope but worth revisiting
+      before exposing this beyond a trusted home LAN.
+- [ ] Cloud/serverless storage backends, if scale ever demands it.
