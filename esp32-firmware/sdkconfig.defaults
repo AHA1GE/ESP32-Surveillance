@@ -3,12 +3,15 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_QUAD=y
 CONFIG_SPIRAM_SPEED_80M=y
 
-# Partition table: OTA-capable with two OTA slots
+# Partition table: OTA-capable with two OTA slots. The AI-Thinker board's
+# 4MB flash chip (the old Arduino config used FlashSize=4M) is required -
+# the two-OTA partition table needs ~3.1MB, which doesn't fit in IDF's
+# generic 2MB default.
 CONFIG_PARTITION_TABLE_TWO_OTA=y
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 
 # TLS certificate bundle for HTTPS
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
-CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT=y
 
 # Logging
 CONFIG_LOG_DEFAULT_LEVEL=2
