@@ -34,7 +34,9 @@ point.
    the `Firmware` workflow run (or run `idf.py build` locally if you have
    the ESP-IDF toolchain installed).
 2. Flash once over USB: `esptool.py write_flash @flash_args` from the
-   downloaded build, or `idf.py -p <PORT> flash` locally.
+   downloaded build, or `idf.py -p <PORT> flash` locally. The build also
+   contains `merged-binary.bin`, one image flashable at 0x0:
+   `esptool.py -p <PORT> write_flash 0x0 merged-binary.bin`.
 3. First boot (or any boot with missing/invalid config) opens the config
    portal: the red LED double-blinks and the camera serves an open WiFi AP
    named `ESP32-CAM-XXXXXX`. Join it, open `http://192.168.4.1/`, fill in

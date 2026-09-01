@@ -24,6 +24,10 @@ jobs:
           esp_idf_version: v5.3
           target: esp32
           path: esp32-firmware
+          # idf.py merge-bin packs bootloader + partition table + otadata +
+          # app from the project config into one build/merged-binary.bin,
+          # flashable at 0x0.
+          command: idf.py build && idf.py merge-bin -f raw
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v7
@@ -39,7 +43,9 @@ jobs:
 
   release:
     # Long-term this is what the firmware's OTA check polls (GitHub Releases
-    # "latest" API). Keep the asset a plain .bin at a predictable name.
+    # "latest" API). Attach only the app image: ota.c downloads the first
+    # .bin asset it finds, so merged-binary.bin and the other bins must not
+    # be attached or devices could OTA-flash the wrong image.
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
@@ -54,4 +60,4 @@ jobs:
       - name: Attach firmware to release
         uses: softprops/action-gh-release@v3
         with:
-          files: firmware/*.bin
+          files: firmware/esp32-surveillance-firmware.bin
