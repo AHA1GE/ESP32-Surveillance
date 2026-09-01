@@ -67,6 +67,11 @@ func (d *Device) startFFmpeg() error {
 	liveManifest := filepath.Join(d.liveDir, "index.m3u8")
 	archivePattern := filepath.Join(d.archiveDir, "%Y%m%d_%H%M%S.mp4")
 
+	// Keyframes are forced by wall-clock time rather than GOP frame count:
+	// the camera's frame rate varies, so a fixed frame interval would make
+	// segment durations swing with the source rate.
+	forceKeyframes := "expr:gte(t,n_forced*" + fmt.Sprintf("%d", d.config.HLSSegmentSeconds) + ")"
+
 	// Codec options are repeated before each output: ffmpeg scopes
 	// output-affecting flags to the next output URL only, so without the
 	// repeat the archive output would silently fall back to the segment
@@ -74,11 +79,18 @@ func (d *Device) startFFmpeg() error {
 	args := []string{
 		"-f", "image2pipe",
 		"-c:v", "mjpeg",
+		// image2pipe stamps every frame at a fixed 25 fps by default, but the
+		// camera pushes frames at its own pace (a few fps). Fake timestamps
+		// make segments fill ~10x slower than they play, so players
+		// fast-forward each segment and then starve. Wall-clock timestamps
+		// keep playback real-time at whatever rate frames actually arrive.
+		"-use_wallclock_as_timestamps", "1",
 		"-i", "pipe:0",
 
 		"-c:v", "libx264",
 		"-preset", "fast",
 		"-pix_fmt", "yuv420p",
+		"-force_key_frames", forceKeyframes,
 		"-f", "hls",
 		"-hls_time", fmt.Sprintf("%d", d.config.HLSSegmentSeconds),
 		"-hls_list_size", fmt.Sprintf("%d", d.config.HLSLiveWindowSegments),
@@ -88,6 +100,7 @@ func (d *Device) startFFmpeg() error {
 		"-c:v", "libx264",
 		"-preset", "fast",
 		"-pix_fmt", "yuv420p",
+		"-force_key_frames", forceKeyframes,
 		"-f", "segment",
 		"-strftime", "1",
 		"-segment_time", fmt.Sprintf("%d", d.config.ArchiveSegmentSeconds),
