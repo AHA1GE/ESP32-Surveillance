@@ -3,12 +3,12 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_QUAD=y
 CONFIG_SPIRAM_SPEED_80M=y
 
-# Route large heap allocations to PSRAM: the WebSocket client allocates
-# 2x its 128KiB buffer_size (tx + rx), which would not fit internal RAM
-# alongside the WiFi stack. Allocations >=16KiB go to the 4MiB PSRAM;
-# small allocations stay internal for speed and DMA safety.
-CONFIG_SPIRAM_USE_MALLOC=y
-CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+# Keep the WebSocket client's tx/rx buffers transient (allocated per
+# send/receive and freed after) instead of resident. Resident 2x96KiB
+# buffers would either not fit internal RAM or - with SPIRAM_USE_MALLOC -
+# steal PSRAM bandwidth from the camera's framebuffer DMA, which caused
+# EV-EOF-OVF frame overflows and killed the stream every ~12s.
+CONFIG_ESP_WS_CLIENT_ENABLE_DYNAMIC_BUFFER=y
 
 # Partition table: OTA-capable with two OTA slots. Custom rather than the
 # stock two-OTA template - this firmware (camera + WiFi + full TLS + HTTPS

@@ -18,11 +18,10 @@
 #define STA_CONNECT_TIMEOUT_MS    60000
 #define CAMERA_RETRY_INTERVAL_MS  5000
 
-/* The camera only produces ~1-2 genuinely new frames per second at SVGA;
- * free-running capture re-sends near-identical JPEGs at ~20fps, wasting
- * 1-2 MB/s of airtime. Pacing to 10fps keeps every real frame and cuts
- * the uplink load in half. */
-#define STREAM_TARGET_FPS          10
+/* The camera only produces ~1-2 genuinely new frames per second; pacing to
+ * 5fps keeps every real frame while leaving the PSRAM bus mostly to the
+ * camera's framebuffer DMA. Raise once the stream is proven stable. */
+#define STREAM_TARGET_FPS          5
 
 static void streaming_task(void *pvParameters)
 {

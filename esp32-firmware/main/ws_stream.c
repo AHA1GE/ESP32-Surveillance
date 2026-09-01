@@ -55,12 +55,17 @@ esp_websocket_client_handle_t ws_stream_init(const char *device_id,
     esp_websocket_client_config_t websocket_cfg = {
         .uri = uri,
         .reconnect_timeout_ms = 10000,
+        /* Same as the component default, set explicitly to silence the
+         * "using default time out" warning at boot. */
+        .network_timeout_ms = 10000,
         /* Send each camera frame as ONE WebSocket message. The 1KiB default
          * would fragment every JPEG into ~100 frames on the wire, which hits
          * a coder/websocket server-side edge case (mid-message EOF is
          * mistaken for a clean end) and kills the connection every few
-         * seconds. 128KiB covers the largest SVGA q10 JPEG with margin. */
-        .buffer_size = 128 * 1024,
+         * seconds. 96KiB covers the largest VGA q10 JPEG with margin; with
+         * CONFIG_ESP_WS_CLIENT_ENABLE_DYNAMIC_BUFFER the buffer is transient
+         * internal RAM, not a resident PSRAM allocation. */
+        .buffer_size = 96 * 1024,
     };
 
     esp_websocket_client_handle_t client = esp_websocket_client_init(&websocket_cfg);

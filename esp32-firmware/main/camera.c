@@ -35,7 +35,12 @@ esp_err_t camera_init(void)
         .ledc_channel = LEDC_CHANNEL_0,
 
         .pixel_format = PIXFORMAT_JPEG,
-        .frame_size = FRAMESIZE_SVGA,
+        /* VGA rather than SVGA: the bigger frames saturated the PSRAM bus
+         * (camera DMA + the WebSocket client's per-frame copies) and caused
+         * EV-EOF-OVF framebuffer overflows that destabilized the stream.
+         * VGA at q10 also always fits the client's 96KiB send buffer, so
+         * every frame goes out as a single WebSocket message. */
+        .frame_size = FRAMESIZE_VGA,
         .jpeg_quality = 10,
         .fb_count = 2,
         .grab_mode = CAMERA_GRAB_LATEST,
