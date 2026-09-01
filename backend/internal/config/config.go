@@ -8,6 +8,7 @@ import (
 
 type Config struct {
 	ListenAddr              string
+	UIListenAddr            string
 	StorageRoot             string
 	FFmpegPath              string
 	HLSSegmentSeconds       int
@@ -20,6 +21,7 @@ type Config struct {
 func Load() *Config {
 	return &Config{
 		ListenAddr:            getEnv("LISTEN_ADDR", ":8080"),
+		UIListenAddr:          getEnv("UI_LISTEN_ADDR", ""),
 		StorageRoot:           getEnv("STORAGE_ROOT", "./storage"),
 		FFmpegPath:            getEnv("FFMPEG_PATH", "ffmpeg"),
 		HLSSegmentSeconds:     getEnvInt("HLS_SEGMENT_SECONDS", 4),

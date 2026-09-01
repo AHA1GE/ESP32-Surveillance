@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Surveillance devices</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, sans-serif; background: #111; color: #eee; margin: 0; padding: 1rem; }
+  h1 { font-size: 1.4rem; }
+  ul#devices { list-style: none; padding: 0; display: grid; gap: .75rem;
+               grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+  li { background: #1b1b1b; border: 1px solid #2a2a2a; border-radius: 8px; padding: 1rem; }
+  li a { color: #6cf; text-decoration: none; font-size: 1.05rem; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: .5rem; }
+  .online { background: #3c6; }
+  .offline { background: #666; }
+  .meta { color: #999; font-size: .85rem; margin-top: .4rem; }
+</style>
+</head>
+<body>
+<h1>Devices</h1>
+<ul id="devices">
+{{range .Devices}}
+  <li>
+    <a href="/view/{{.ID}}"><span class="dot {{if .Online}}online{{else}}offline{{end}}"></span>{{.ID}}</a>
+    <div class="meta">{{if .Online}}online{{else if .LastSeen}}offline, last seen {{.LastSeen}}{{else}}never streamed{{end}}</div>
+  </li>
+{{end}}
+</ul>
+<p class="meta" id="empty"{{if .Devices}} hidden{{end}}>No devices have connected yet. Point a camera's backend URL at this server; devices appear here after their first connection.</p>
+<script>
+// Re-render the list from /api/devices every 5 s so the status dots stay
+// current without a full page reload.
+function render(devs) {
+  var ul = document.getElementById('devices');
+  var empty = document.getElementById('empty');
+  empty.hidden = devs.length > 0;
+  ul.innerHTML = '';
+  devs.forEach(function (d) {
+    var li = document.createElement('li');
+    var a = document.createElement('a');
+    a.href = '/view/' + encodeURIComponent(d.id);
+    var dot = document.createElement('span');
+    dot.className = 'dot ' + (d.online ? 'online' : 'offline');
+    var meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = d.online ? 'online'
+      : (d.lastSeen ? 'offline, last seen ' + d.lastSeen : 'never streamed');
+    a.appendChild(dot);
+    a.appendChild(document.createTextNode(d.id));
+    li.appendChild(a);
+    li.appendChild(meta);
+    ul.appendChild(li);
+  });
+}
+setInterval(function () {
+  fetch('/api/devices')
+    .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(render)
+    .catch(function () {}); // keep the last good render on error
+}, 5000);
+</script>
+</body>
+</html>

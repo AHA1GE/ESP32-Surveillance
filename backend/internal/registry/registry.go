@@ -18,6 +18,10 @@ func New() *Registry {
 }
 
 func (r *Registry) GetOrCreate(deviceID string, cfg *pipeline.DeviceConfig) (*pipeline.Device, error) {
+	if err := ValidateDeviceID(deviceID); err != nil {
+		return nil, err
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 

@@ -29,6 +29,13 @@ func (i *Ingester) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reject before the WebSocket upgrade so bad IDs never get a connection.
+	// GetOrCreate validates again as defense in depth.
+	if !registry.ValidDeviceID(deviceID) {
+		http.Error(w, "invalid deviceID", http.StatusBadRequest)
+		return
+	}
+
 	conn, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		log.Printf("failed to accept WebSocket connection: %v", err)

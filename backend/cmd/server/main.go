@@ -11,6 +11,7 @@ import (
 
 	"github.com/AHA1GE/ESP32-Surveillance/backend/internal/config"
 	"github.com/AHA1GE/ESP32-Surveillance/backend/internal/httpapi"
+	"github.com/AHA1GE/ESP32-Surveillance/backend/internal/httpapi/ui"
 	"github.com/AHA1GE/ESP32-Surveillance/backend/internal/ingest"
 	"github.com/AHA1GE/ESP32-Surveillance/backend/internal/pipeline"
 	"github.com/AHA1GE/ESP32-Surveillance/backend/internal/registry"
@@ -37,6 +38,7 @@ func main() {
 	ingester := ingest.New(reg, pipelineCfg)
 	liveHandler := httpapi.NewLiveHandler(reg)
 	archiveHandler := httpapi.NewArchiveHandler(reg)
+	uiHandler := ui.New(reg)
 
 	cleaner := retention.New(reg, cfg.ArchiveRetentionDays, cfg.RetentionCheckInterval)
 	cleaner.Start()
@@ -46,6 +48,10 @@ func main() {
 	mux.HandleFunc("GET /archive/{id}", archiveHandler.ListHandler)
 	mux.HandleFunc("GET /archive/{id}/{file}", archiveHandler.ServeHTTP)
 	mux.HandleFunc("GET /ingest/{deviceID}", ingester.ServeHTTP)
+	mux.HandleFunc("GET /{$}", uiHandler.DeviceList)
+	mux.HandleFunc("GET /view/{id}", uiHandler.DeviceView)
+	mux.HandleFunc("GET /api/devices", uiHandler.DevicesJSON)
+	mux.HandleFunc("GET /static/hls.light.min.js", uiHandler.StaticHLS)
 
 	server := &http.Server{
 		Addr:    cfg.ListenAddr,
@@ -61,6 +67,22 @@ func main() {
 			log.Fatalf("server error: %v", err)
 		}
 	}()
+
+	// Optional extra listener for the web UI (same mux, so it serves the
+	// full API too). Disabled by default; the Docker image sets it to :80.
+	var uiServer *http.Server
+	if cfg.UIListenAddr != "" {
+		uiServer = &http.Server{
+			Addr:    cfg.UIListenAddr,
+			Handler: mux,
+		}
+		log.Printf("ui listener on %s", cfg.UIListenAddr)
+		go func() {
+			if err := uiServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("ui server error: %v", err)
+			}
+		}()
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -78,6 +100,11 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	server.Shutdown(ctx)
+	if uiServer != nil {
+		if err := uiServer.Shutdown(ctx); err != nil {
+			log.Printf("ui server shutdown: %v", err)
+		}
+	}
 
 	log.Println("server stopped")
 }

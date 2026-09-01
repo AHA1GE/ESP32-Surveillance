@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Device {{.ID}}</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, sans-serif; background: #111; color: #eee; margin: 0; padding: 1rem; }
+  a { color: #6cf; }
+  video { width: 100%; max-height: 70vh; background: #000; border-radius: 8px; }
+  h1 { font-size: 1.4rem; }
+  #status { font-weight: normal; }
+  #status.online { color: #3c6; }
+  #status.offline { color: #999; }
+  #error { color: #c66; }
+  #clips { margin-top: 1rem; }
+  #clips ul { list-style: none; padding: 0; }
+  #clips li { padding: .3rem 0; }
+</style>
+</head>
+<body>
+<p><a href="/">&larr; all devices</a></p>
+<h1>{{.ID}} <span id="status" class="{{if .Online}}online{{else}}offline{{end}}">{{if .Online}}online{{else}}offline{{end}}</span></h1>
+<video id="player" controls muted autoplay playsinline
+       data-id="{{.ID}}" data-src="{{.StreamURL}}"></video>
+<div id="error"></div>
+<h2>Recorded clips</h2>
+<div id="clips">loading&hellip;</div>
+<script src="/static/hls.light.min.js"></script>
+<script>
+// Note: no template values appear inside this script. The device ID and
+// stream URL travel through data-* attributes on the video element, which
+// html/template escapes as attribute values.
+(function () {
+  'use strict';
+  var video = document.getElementById('player');
+  var id = video.dataset.id;
+  var src = video.dataset.src;
+  var errorEl = document.getElementById('error');
+
+  if (window.Hls && Hls.isSupported()) {
+    var hls = new Hls({ liveSyncDurationCount: 2 });
+    hls.loadSource(src);
+    hls.attachMedia(video);
+    hls.on(Hls.Events.MANIFEST_PARSED, function () {
+      video.play().catch(function () {});
+    });
+    // Before the first frame arrives index.m3u8 does not exist yet (404),
+    // so retry fatal errors instead of giving up; the same recovery covers
+    // the device reconnecting or ffmpeg restarting.
+    hls.on(Hls.Events.ERROR, function (evt, data) {
+      if (!data || !data.fatal) return;
+      if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
+      else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+      else errorEl.textContent = 'Stream error: ' + (data.details || 'unknown');
+    });
+  } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    video.src = src; // native HLS (Safari)
+  } else {
+    errorEl.textContent = 'HLS playback is not supported in this browser.';
+  }
+
+  function fmtSize(b) {
+    if (b < 1024) return b + ' B';
+    if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
+    return (b / 1048576).toFixed(1) + ' MB';
+  }
+
+  fetch('/archive/' + encodeURIComponent(id))
+    .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function (files) {
+      var el = document.getElementById('clips');
+      if (!files.length) { el.textContent = 'No recordings yet.'; return; }
+      var ul = document.createElement('ul');
+      files.forEach(function (f) {
+        var li = document.createElement('li');
+        var a = document.createElement('a');
+        a.href = '/archive/' + encodeURIComponent(id) + '/' + encodeURIComponent(f.name);
+        a.textContent = f.name + ' (' + fmtSize(f.size) + ')';
+        li.appendChild(a);
+        ul.appendChild(li);
+      });
+      el.innerHTML = '';
+      el.appendChild(ul);
+    })
+    .catch(function (e) { document.getElementById('clips').textContent = 'Failed to load clips: ' + e.message; });
+})();
+</script>
+</body>
+</html>

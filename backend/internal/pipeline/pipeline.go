@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 type DeviceConfig struct {
@@ -27,6 +28,7 @@ type Device struct {
 	liveDir    string
 	archiveDir string
 	mu         sync.Mutex
+	lastFrame  time.Time // last successful frame ingest; zero = never streamed
 }
 
 func NewDevice(deviceID string, cfg *DeviceConfig) (*Device, error) {
@@ -151,6 +153,8 @@ func (d *Device) WriteFrame(frame []byte) error {
 		// instead of writing into a pipe whose reader is already gone.
 		d.stdin = nil
 		d.ffmpegCmd = nil
+	} else {
+		d.lastFrame = time.Now()
 	}
 	return err
 }
@@ -177,4 +181,12 @@ func (d *Device) LiveDir() string {
 
 func (d *Device) ArchiveDir() string {
 	return d.archiveDir
+}
+
+// LastFrame returns when the device last successfully ingested a frame,
+// or the zero time if it has never streamed since startup.
+func (d *Device) LastFrame() time.Time {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.lastFrame
 }

@@ -61,13 +61,22 @@ restructuring.
 ### Backend
 
 ```bash
-docker run -p 8080:8080 -v ./data:/storage ghcr.io/aha1ge/esp32-surveillance/backend:latest
+docker run -d -p 80:80 -p 8080:8080 \
+  -v surveillance-storage:/storage \
+  ghcr.io/aha1ge/esp32-surveillance/backend:latest
 ```
 
+`/storage` inside the container is where recorded clips and live stream data
+are written. The command above mounts a named volume `surveillance-storage`
+so recordings survive container replacement; to keep them as a local folder
+instead, use a bind mount: `-v ./data:/storage`.
+
 See [backend/README.md](backend/README.md) for configuration and endpoints.
-Once a device is streaming, open `http://<backend>:8080/live/<deviceID>/index.m3u8`
-in VLC (or any HLS-capable player) to watch live; recorded clips are listed
-at `http://<backend>:8080/archive/<deviceID>`.
+Open `http://<backend>/` in a browser for the web UI: a device list with
+online status, and a per-device page with a live player and recorded clip
+downloads. VLC still works too: open
+`http://<backend>:8080/live/<deviceID>/index.m3u8` to watch live, and list
+recorded clips at `http://<backend>:8080/archive/<deviceID>`.
 
 ## Roadmap
 

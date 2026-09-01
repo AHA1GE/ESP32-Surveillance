@@ -22,6 +22,7 @@ WORKDIR /app
 COPY --from=builder /build/server .
 
 ENV LISTEN_ADDR=:8080 \
+    UI_LISTEN_ADDR=:80 \
     STORAGE_ROOT=/storage \
     FFMPEG_PATH=ffmpeg \
     HLS_SEGMENT_SECONDS=4 \
@@ -32,6 +33,6 @@ ENV LISTEN_ADDR=:8080 \
 
 VOLUME ["/storage"]
 
-EXPOSE 8080
+EXPOSE 80 8080
 
 CMD ["./server"]
