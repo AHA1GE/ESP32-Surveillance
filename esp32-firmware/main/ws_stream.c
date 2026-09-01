@@ -2,6 +2,7 @@
 
 #include "led.h"
 
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_websocket_client.h>
 #include <freertos/FreeRTOS.h>
@@ -12,6 +13,15 @@
 
 /* How long a frame send may block before the frame is dropped. */
 #define WS_SEND_TIMEOUT_MS 2000
+
+/* VGA JPEGs are capped at ~60KiB by the camera driver's width*height/5 fb
+ * allocation, so 64KiB always holds a full frame. Staging lives in PSRAM:
+ * an internal-RAM copy would contend with the ws client's 96KiB transient
+ * tx buffer, and the extra PSRAM copy traffic (~1MB/s at 10fps) is well
+ * within the bus budget. */
+#define STAGING_SIZE (64 * 1024)
+
+static uint8_t *s_staging;
 
 /* Tracked by the event handler so the streaming task can drop frames while
  * the client is disconnected instead of failing a send every frame period. */
@@ -54,7 +64,11 @@ esp_websocket_client_handle_t ws_stream_init(const char *device_id,
 
     esp_websocket_client_config_t websocket_cfg = {
         .uri = uri,
-        .reconnect_timeout_ms = 10000,
+        /* A failed send aborts the connection (the component tears down the
+         * transport internally) and reconnects after this delay, so it bounds
+         * the post-stall recovery blackout. 3s recovers fast without hammering
+         * a still-down network. */
+        .reconnect_timeout_ms = 3000,
         /* Same as the component default, set explicitly to silence the
          * "using default time out" warning at boot. */
         .network_timeout_ms = 10000,
@@ -85,13 +99,39 @@ esp_websocket_client_handle_t ws_stream_init(const char *device_id,
         return NULL;
     }
 
+    if (!s_staging) {
+        s_staging = heap_caps_malloc(STAGING_SIZE, MALLOC_CAP_SPIRAM);
+        if (!s_staging) {
+            /* Non-fatal: the streaming task falls back to holding the
+             * framebuffer for the whole send (the pre-staging behavior). */
+            ESP_LOGW(TAG, "Staging allocation failed, streaming without staging");
+        }
+    }
+
     return client;
+}
+
+uint8_t *ws_stream_staging_buffer(void)
+{
+    return s_staging;
+}
+
+size_t ws_stream_staging_size(void)
+{
+    return STAGING_SIZE;
 }
 
 esp_err_t ws_stream_send_frame(esp_websocket_client_handle_t client, uint8_t *buf, size_t len)
 {
     if (!client) {
         return ESP_ERR_INVALID_ARG;
+    }
+
+    /* Drop garbage JPEGs (post-stall EV-EOF-OVF/NO-SOI frames are missing
+     * SOI/EOI markers) instead of feeding ffmpeg a corrupt frame. */
+    if (len < 4 || buf[0] != 0xFF || buf[1] != 0xD8 || buf[len - 2] != 0xFF || buf[len - 1] != 0xD9) {
+        ESP_LOGW(TAG, "Dropping invalid JPEG (%u bytes)", (unsigned)len);
+        return ESP_ERR_INVALID_SIZE;
     }
 
     /* Drop the frame while disconnected: send_bin() would just fail and
@@ -102,9 +142,10 @@ esp_err_t ws_stream_send_frame(esp_websocket_client_handle_t client, uint8_t *bu
     }
 
     /* A stalled TCP connection would otherwise block the streaming task
-     * forever on portMAX_DELAY while it holds the camera frame buffer -
-     * freezing the stream until reboot. Bound the wait and drop the frame
-     * instead; the next capture retries and the stream recovers. */
+     * forever on portMAX_DELAY. Bound the wait and drop the frame instead;
+     * the component aborts the connection internally on a failed send and
+     * reconnects, so the stream recovers without holding the staging buffer
+     * (or, in fallback mode, the camera framebuffer) indefinitely. */
     int ret = esp_websocket_client_send_bin(client, (char *)buf, len, pdMS_TO_TICKS(WS_SEND_TIMEOUT_MS));
     if (ret < 0) {
         ESP_LOGE(TAG, "Failed to send frame: %d", ret);

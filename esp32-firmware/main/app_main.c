@@ -1,8 +1,10 @@
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_system.h>
 #include <nvs_flash.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <string.h>
 
 #include "wifi.h"
 #include "camera.h"
@@ -18,10 +20,12 @@
 #define STA_CONNECT_TIMEOUT_MS    60000
 #define CAMERA_RETRY_INTERVAL_MS  5000
 
-/* The camera only produces ~1-2 genuinely new frames per second; pacing to
- * 5fps keeps every real frame while leaving the PSRAM bus mostly to the
- * camera's framebuffer DMA. Raise once the stream is proven stable. */
-#define STREAM_TARGET_FPS          5
+/* Pacing ceiling. The camera produces new VGA frames at roughly the sensor
+ * rate (community baseline SVGA ~6fps scales to ~9-10fps at VGA); grab_latest
+ * makes each grab the newest completed frame, so the loop sends every real
+ * frame once and pacing to 10fps only bounds the load if the sensor runs
+ * ahead. */
+#define STREAM_TARGET_FPS          10
 
 static void streaming_task(void *pvParameters)
 {
@@ -32,11 +36,72 @@ static void streaming_task(void *pvParameters)
     const TickType_t frame_period = pdMS_TO_TICKS(1000 / STREAM_TARGET_FPS);
     TickType_t last_wake = xTaskGetTickCount();
 
+    /* Rolling telemetry over a ~10s window, measured in tick time so a slow
+     * window (send stalls, reconnect) reports a true rate rather than the
+     * loop's attempted rate. */
+    const TickType_t stats_period = pdMS_TO_TICKS(10000);
+    TickType_t stats_window_start = xTaskGetTickCount();
+    uint32_t frames_captured = 0;
+    uint32_t frames_sent = 0;
+    uint32_t frames_failed = 0;
+    uint32_t frames_invalid = 0;
+    uint32_t frames_dropped = 0;
+    uint64_t last_capture_us = 0;
+
     while (1) {
         camera_fb_t *fb = camera_capture();
         if (fb) {
-            ws_stream_send_frame(ws_client, fb->buf, fb->len);
-            camera_release(fb);
+            /* Count genuinely new frames: grab_latest normally guarantees a
+             * fresh timestamp per grab, so this only filters duplicates. */
+            uint64_t capture_us = (uint64_t)fb->timestamp.tv_sec * 1000000UL + fb->timestamp.tv_usec;
+            if (capture_us != last_capture_us) {
+                frames_captured++;
+                last_capture_us = capture_us;
+            }
+
+            size_t frame_len = fb->len;
+            uint8_t *staging = ws_stream_staging_buffer();
+            esp_err_t err;
+            if (staging && frame_len <= ws_stream_staging_size()) {
+                /* Copy the JPEG out of the framebuffer and release it before
+                 * the (blocking) send, so the camera keeps capturing while
+                 * this frame drains over WiFi. */
+                memcpy(staging, fb->buf, frame_len);
+                camera_release(fb);
+                err = ws_stream_send_frame(ws_client, staging, frame_len);
+            } else {
+                /* No staging (allocation failed at boot, or an oversized
+                 * frame): fall back to holding the framebuffer for the whole
+                 * send, the pre-staging behavior. */
+                err = ws_stream_send_frame(ws_client, fb->buf, frame_len);
+                camera_release(fb);
+            }
+
+            if (err == ESP_OK) {
+                frames_sent++;
+            } else if (err == ESP_FAIL) {
+                frames_failed++;
+            } else if (err == ESP_ERR_INVALID_SIZE) {
+                frames_invalid++;
+            } else if (err == ESP_ERR_INVALID_STATE) {
+                frames_dropped++;
+            }
+        }
+
+        TickType_t now = xTaskGetTickCount();
+        if ((now - stats_window_start) >= stats_period) {
+            float elapsed_s = (float)(now - stats_window_start) * portTICK_PERIOD_MS / 1000.0f;
+            ESP_LOGI(TAG, "stream: capture=%.1ffps sent=%.1ffps failed=%lu invalid=%lu dropped=%lu heap_free=%u",
+                     frames_captured / elapsed_s, frames_sent / elapsed_s,
+                     (unsigned long)frames_failed, (unsigned long)frames_invalid,
+                     (unsigned long)frames_dropped,
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+            stats_window_start = now;
+            frames_captured = 0;
+            frames_sent = 0;
+            frames_failed = 0;
+            frames_invalid = 0;
+            frames_dropped = 0;
         }
 
         vTaskDelayUntil(&last_wake, frame_period);
