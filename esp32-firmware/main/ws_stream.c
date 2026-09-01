@@ -13,6 +13,10 @@
 /* How long a frame send may block before the frame is dropped. */
 #define WS_SEND_TIMEOUT_MS 2000
 
+/* Tracked by the event handler so the streaming task can drop frames while
+ * the client is disconnected instead of failing a send every frame period. */
+static volatile bool s_ws_connected;
+
 static void websocket_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id,
                                     void *event_data)
 {
@@ -21,10 +25,12 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
 
     switch (event_id) {
         case WEBSOCKET_EVENT_CONNECTED:
+            s_ws_connected = true;
             ESP_LOGI(TAG, "WebSocket connected");
             led_set_pattern(LED_PATTERN_SOLID);
             break;
         case WEBSOCKET_EVENT_DISCONNECTED:
+            s_ws_connected = false;
             ESP_LOGW(TAG, "WebSocket disconnected");
             led_set_pattern(LED_PATTERN_FAST_FLASH);
             break;
@@ -32,6 +38,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
             ESP_LOGD(TAG, "Received data: len=%d", data->data_len);
             break;
         case WEBSOCKET_EVENT_ERROR:
+            s_ws_connected = false;
             ESP_LOGE(TAG, "WebSocket error");
             led_set_pattern(LED_PATTERN_FAST_FLASH);
             break;
@@ -48,6 +55,12 @@ esp_websocket_client_handle_t ws_stream_init(const char *device_id,
     esp_websocket_client_config_t websocket_cfg = {
         .uri = uri,
         .reconnect_timeout_ms = 10000,
+        /* Send each camera frame as ONE WebSocket message. The 1KiB default
+         * would fragment every JPEG into ~100 frames on the wire, which hits
+         * a coder/websocket server-side edge case (mid-message EOF is
+         * mistaken for a clean end) and kills the connection every few
+         * seconds. 128KiB covers the largest SVGA q10 JPEG with margin. */
+        .buffer_size = 128 * 1024,
     };
 
     esp_websocket_client_handle_t client = esp_websocket_client_init(&websocket_cfg);
@@ -74,6 +87,13 @@ esp_err_t ws_stream_send_frame(esp_websocket_client_handle_t client, uint8_t *bu
 {
     if (!client) {
         return ESP_ERR_INVALID_ARG;
+    }
+
+    /* Drop the frame while disconnected: send_bin() would just fail and
+     * log-spam at frame rate while the reconnect timer runs. The state
+     * transitions are logged once each in the event handler instead. */
+    if (!s_ws_connected) {
+        return ESP_ERR_INVALID_STATE;
     }
 
     /* A stalled TCP connection would otherwise block the streaming task

@@ -18,20 +18,29 @@
 #define STA_CONNECT_TIMEOUT_MS    60000
 #define CAMERA_RETRY_INTERVAL_MS  5000
 
+/* The camera only produces ~1-2 genuinely new frames per second at SVGA;
+ * free-running capture re-sends near-identical JPEGs at ~20fps, wasting
+ * 1-2 MB/s of airtime. Pacing to 10fps keeps every real frame and cuts
+ * the uplink load in half. */
+#define STREAM_TARGET_FPS          10
+
 static void streaming_task(void *pvParameters)
 {
     esp_websocket_client_handle_t ws_client = (esp_websocket_client_handle_t)pvParameters;
 
     ESP_LOGI(TAG, "Starting streaming task");
 
+    const TickType_t frame_period = pdMS_TO_TICKS(1000 / STREAM_TARGET_FPS);
+    TickType_t last_wake = xTaskGetTickCount();
+
     while (1) {
         camera_fb_t *fb = camera_capture();
         if (fb) {
             ws_stream_send_frame(ws_client, fb->buf, fb->len);
             camera_release(fb);
-        } else {
-            vTaskDelay(pdMS_TO_TICKS(100));
         }
+
+        vTaskDelayUntil(&last_wake, frame_period);
     }
 
     vTaskDelete(NULL);
