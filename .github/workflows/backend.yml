@@ -21,9 +21,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # go.sum is intentionally not committed (see backend/README.md), and
+      # go.mod lives in backend/ rather than the workspace root, so point
+      # the dependency cache at it explicitly - otherwise setup-go warns
+      # that it can't find the dependencies file.
       - uses: actions/setup-go@v7
         with:
           go-version: '1.22'
+          cache-dependency-path: backend/go.mod
 
       - run: go mod tidy
       - run: go vet ./...
