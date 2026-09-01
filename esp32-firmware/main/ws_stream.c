@@ -1,14 +1,16 @@
 #include "ws_stream.h"
 
+#include "led.h"
+
 #include <esp_log.h>
 #include <esp_websocket_client.h>
-#include <string.h>
 #include <stdio.h>
+#include <string.h>
 
 #define TAG "ws_stream"
 
 static void websocket_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id,
-                                   void *event_data)
+                                    void *event_data)
 {
     esp_websocket_event_data_t *data = (esp_websocket_event_data_t *)event_data;
     esp_websocket_client_handle_t client = (esp_websocket_client_handle_t)handler_args;
@@ -16,24 +18,28 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
     switch (event_id) {
         case WEBSOCKET_EVENT_CONNECTED:
             ESP_LOGI(TAG, "WebSocket connected");
+            led_set_pattern(LED_PATTERN_SOLID);
             break;
         case WEBSOCKET_EVENT_DISCONNECTED:
             ESP_LOGW(TAG, "WebSocket disconnected");
+            led_set_pattern(LED_PATTERN_FAST_FLASH);
             break;
         case WEBSOCKET_EVENT_DATA:
             ESP_LOGD(TAG, "Received data: len=%d", data->data_len);
             break;
         case WEBSOCKET_EVENT_ERROR:
             ESP_LOGE(TAG, "WebSocket error");
+            led_set_pattern(LED_PATTERN_FAST_FLASH);
             break;
     }
 }
 
-esp_websocket_client_handle_t ws_stream_init(const char *device_id)
+esp_websocket_client_handle_t ws_stream_init(const char *device_id,
+                                             const char *backend_host,
+                                             uint16_t backend_port)
 {
     char uri[256];
-    snprintf(uri, sizeof(uri), "ws://%s:%d/ingest/%s",
-             CONFIG_BACKEND_HOST, CONFIG_BACKEND_PORT, device_id);
+    snprintf(uri, sizeof(uri), "ws://%s:%u/ingest/%s", backend_host, backend_port, device_id);
 
     esp_websocket_client_config_t websocket_cfg = {
         .uri = uri,

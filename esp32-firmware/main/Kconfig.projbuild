@@ -1,34 +1,9 @@
 menu "ESP32 Surveillance Firmware Configuration"
 
-    config WIFI_SSID
-        string "WiFi SSID"
-        default ""
-        help
-            SSID (network name) to connect to
-
-    config WIFI_PASSWORD
-        string "WiFi Password"
-        default ""
-        help
-            WiFi password
-
-    config BACKEND_HOST
-        string "Backend Server Host"
-        default "192.168.1.111"
-        help
-            Hostname or IP address of the WebSocket backend server
-
-    config BACKEND_PORT
-        int "Backend Server Port"
-        default 8080
-        help
-            Port number for the WebSocket backend server
-
-    config DEVICE_ID
-        string "Device ID"
-        default "cam1"
-        help
-            Unique identifier for this camera device (used in WebSocket connection URL)
+    # Device-level settings (WiFi SSID/password, backend host/port) are no
+    # longer compile-time - they live in NVS and are configured at runtime
+    # through the AP web portal. These remaining entries are repository-level
+    # (identical for every device), so Kconfig still fits.
 
     config OTA_GITHUB_OWNER
         string "GitHub Repository Owner"

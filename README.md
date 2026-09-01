@@ -26,14 +26,31 @@ configuration, and lets a camera keep working across DHCP lease changes.
 
 ### Firmware
 
-1. `cd esp32-firmware && idf.py menuconfig` -> "ESP32 Surveillance Firmware
-   Configuration" - set your WiFi SSID/password, the backend host:port, and
-   a unique device ID for this camera.
-2. Build via CI: push/open a PR and download the `firmware` artifact from
+Device settings are no longer compile-time: each camera stores them in NVS
+and configures itself through a web portal served from its own WiFi access
+point.
+
+1. Build via CI: push/open a PR and download the `firmware` artifact from
    the `Firmware` workflow run (or run `idf.py build` locally if you have
    the ESP-IDF toolchain installed).
-3. Flash once over USB: `esptool.py write_flash @flash_args` from the
+2. Flash once over USB: `esptool.py write_flash @flash_args` from the
    downloaded build, or `idf.py -p <PORT> flash` locally.
+3. First boot (or any boot with missing/invalid config) opens the config
+   portal: the red LED double-blinks and the camera serves an open WiFi AP
+   named `ESP32-CAM-XXXXXX`. Join it, open `http://192.168.4.1/`, fill in
+   the WiFi SSID/password and backend host:port, and press Save and Reboot.
+4. With valid config the camera joins your WiFi and streams to the backend.
+
+Status LED (red, on-board): solid = streaming to a connected backend; fast
+flash = error (camera init failure, backend unreachable); double blink =
+config portal mode. If the stored WiFi credentials stop working, the camera
+automatically reopens the portal after ~60 s so it can be reconfigured
+without a reflash.
+
+Notes: the device ID is derived from the WiFi MAC (`esp32cam-XXXXXX`, the
+same suffix as the AP name) and shows up in the backend live/archive URLs.
+`auto_record`/`auto_flash` are stored for future use but do nothing yet, and
+the WiFi password is stored in plaintext in NVS (no flash encryption yet).
 
 Firmware updates are manual for now (reflash over USB). The OTA path
 (`main/ota.c`) is implemented but inert - enabling `CONFIG_ENABLE_AUTO_OTA`

@@ -22,6 +22,12 @@ were implemented together as a single rearchitecture; hardware verification
 - [x] OTA stub: `ota_check_latest_release()`/`ota_apply()` implemented
       against the GitHub Releases API, gated inert behind
       `CONFIG_ENABLE_AUTO_OTA` (default off).
+- [x] Persistent device config in NVS + AP web portal: WiFi/backend
+      settings are configured at runtime (open AP `ESP32-CAM-XXXXXX` with a
+      pure-HTML form at `http://192.168.4.1/`), no reflash to reconfigure.
+      Device ID is derived from the WiFi MAC; status LED on GPIO33 (solid =
+      streaming, double blink = portal, fast flash = error); STA connect
+      timeout falls back to the portal.
 - [x] CI: firmware builds on every push and attaches the `.bin` to a GitHub
       Release on tag push; backend tests + publishes a multi-arch Docker
       image to GHCR.
@@ -31,6 +37,11 @@ were implemented together as a single rearchitecture; hardware verification
 - [ ] Flash a real AI-Thinker ESP32-CAM and confirm camera init succeeds
       with PSRAM enabled (this is the setting the old Arduino firmware got
       wrong).
+- [ ] Confirm the config portal flow on a real device: first flash -> AP +
+      form -> save -> reboot -> streaming, plus the ~60 s STA-timeout
+      fallback to the portal with wrong credentials.
+- [ ] Confirm the GPIO33 LED patterns (solid / double blink / fast flash)
+      and that the portal form renders correctly on a phone browser.
 - [ ] Confirm sustained frame rate/quality over real WiFi into the live HLS
       view.
 - [ ] Run two physical devices with different device IDs simultaneously and
@@ -43,8 +54,6 @@ were implemented together as a single rearchitecture; hardware verification
 
 - [ ] Wire `CONFIG_ENABLE_AUTO_OTA` to an actual periodic timer instead of a
       one-shot check at boot.
-- [ ] WiFi provisioning without a reflash (NVS + BLE/SoftAP), instead of
-      Kconfig-time credentials.
 - [ ] Authentication in front of the live/archive HTTP endpoints - there is
       currently none, matching the old system's scope but worth revisiting
       before exposing this beyond a trusted home LAN.
