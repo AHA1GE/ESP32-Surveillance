@@ -16,7 +16,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Build firmware
         uses: espressif/esp-idf-ci-action@v1
@@ -26,12 +26,15 @@ jobs:
           path: esp32-firmware
 
       - name: Upload firmware artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: firmware
           path: |
             esp32-firmware/build/*.bin
             esp32-firmware/build/*.elf
+            esp32-firmware/build/flash_args
+            esp32-firmware/build/bootloader/bootloader.bin
+            esp32-firmware/build/partition_table/partition-table.bin
           if-no-files-found: error
 
   release:
@@ -43,12 +46,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: firmware
           path: firmware
 
       - name: Attach firmware to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: firmware/*.bin
