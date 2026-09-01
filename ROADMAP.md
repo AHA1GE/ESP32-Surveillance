@@ -34,13 +34,13 @@ were implemented together as a single rearchitecture; hardware verification
 
 ## Needs hardware to verify
 
-- [ ] Flash a real AI-Thinker ESP32-CAM and confirm camera init succeeds
+- [x] Flash a real AI-Thinker ESP32-CAM and confirm camera init succeeds
       with PSRAM enabled (this is the setting the old Arduino firmware got
       wrong).
-- [ ] Confirm the config portal flow on a real device: first flash -> AP +
+- [x] Confirm the config portal flow on a real device: first flash -> AP +
       form -> save -> reboot -> streaming, plus the ~60 s STA-timeout
       fallback to the portal with wrong credentials.
-- [ ] Confirm the GPIO33 LED patterns (solid / double blink / fast flash)
+- [x] Confirm the GPIO33 LED patterns (solid / double blink / fast flash)
       and that the portal form renders correctly on a phone browser.
 - [ ] Confirm sustained frame rate/quality over real WiFi into the live HLS
       view.
