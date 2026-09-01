@@ -95,6 +95,14 @@ esp_err_t wifi_start_sta(const char *ssid, const char *password, uint32_t connec
     if (err != ESP_OK) return err;
     /* WIFI_EVENT_STA_START fires esp_wifi_connect() via the event handler. */
 
+    /* The default modem power save naps the radio between DTIM beacons,
+     * which stalls WebSocket frame sends and collapses TCP throughput.
+     * Streaming needs the radio on continuously. */
+    err = esp_wifi_set_ps(WIFI_PS_NONE);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to disable WiFi power save: 0x%x", err);
+    }
+
     EventBits_t bits = xEventGroupWaitBits(s_wifi_evt_group, WIFI_BIT_GOT_IP,
                                            pdFALSE, pdTRUE, pdMS_TO_TICKS(connect_timeout_ms));
     if ((bits & WIFI_BIT_GOT_IP) == 0) {

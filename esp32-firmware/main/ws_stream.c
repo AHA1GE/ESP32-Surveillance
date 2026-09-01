@@ -4,10 +4,14 @@
 
 #include <esp_log.h>
 #include <esp_websocket_client.h>
+#include <freertos/FreeRTOS.h>
 #include <stdio.h>
 #include <string.h>
 
 #define TAG "ws_stream"
+
+/* How long a frame send may block before the frame is dropped. */
+#define WS_SEND_TIMEOUT_MS 2000
 
 static void websocket_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id,
                                     void *event_data)
@@ -72,7 +76,11 @@ esp_err_t ws_stream_send_frame(esp_websocket_client_handle_t client, uint8_t *bu
         return ESP_ERR_INVALID_ARG;
     }
 
-    int ret = esp_websocket_client_send_bin(client, (char *)buf, len, portMAX_DELAY);
+    /* A stalled TCP connection would otherwise block the streaming task
+     * forever on portMAX_DELAY while it holds the camera frame buffer -
+     * freezing the stream until reboot. Bound the wait and drop the frame
+     * instead; the next capture retries and the stream recovers. */
+    int ret = esp_websocket_client_send_bin(client, (char *)buf, len, pdMS_TO_TICKS(WS_SEND_TIMEOUT_MS));
     if (ret < 0) {
         ESP_LOGE(TAG, "Failed to send frame: %d", ret);
         return ESP_FAIL;
