@@ -15,6 +15,15 @@ func newHandler(t *testing.T) *Handler {
 	return New(registry.New())
 }
 
+// viewMux routes like main.go: DeviceView reads the device id from
+// r.PathValue, which only the mux populates - a bare httptest request
+// would leave it empty and every id would look unknown.
+func viewMux(h *Handler) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /view/{id}", h.DeviceView)
+	return mux
+}
+
 func TestDeviceListEmpty(t *testing.T) {
 	h := newHandler(t)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -53,7 +62,7 @@ func TestUnknownDeviceView(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/view/does-not-exist", nil)
 	rec := httptest.NewRecorder()
 
-	h.DeviceView(rec, req)
+	viewMux(h).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
@@ -88,7 +97,7 @@ func TestWithDevice(t *testing.T) {
 
 	req = httptest.NewRequest(http.MethodGet, "/view/esp32cam-test01", nil)
 	rec = httptest.NewRecorder()
-	h.DeviceView(rec, req)
+	viewMux(h).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("view page status = %d, want 200", rec.Code)
 	}

@@ -27,11 +27,11 @@ type Options struct {
 // SignalMsg is the single JSON envelope for every message on both sockets.
 // All peers ignore unknown fields, so the protocol can grow independently.
 type SignalMsg struct {
-	Type      string    `json:"type"`
-	SDP       string    `json:"sdp,omitempty"`
-	Candidate string    `json:"candidate,omitempty"`
-	Reason    string    `json:"reason,omitempty"`
-	STUN      []string  `json:"stun,omitempty"`
+	Type      string     `json:"type"`
+	SDP       string     `json:"sdp,omitempty"`
+	Candidate string     `json:"candidate,omitempty"`
+	Reason    string     `json:"reason,omitempty"`
+	STUN      []string   `json:"stun,omitempty"`
 	TURN      *TurnCreds `json:"turn,omitempty"`
 }
 
@@ -206,9 +206,12 @@ func (h *Hub) ServeViewerWS(w http.ResponseWriter, r *http.Request) {
 		// The browser pings every ~20s so an idle view (no ICE traffic while
 		// frames flow over WebRTC) still refreshes this deadline; a viewer
 		// that goes away without closing the socket is evicted within 60s.
-		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-
-		msgType, data, err := conn.Read(ctx)
+		// coder/websocket has no SetReadDeadline - a per-read timeout has
+		// the same effect, and a timed-out read poisons the connection,
+		// which is the eviction we want anyway.
+		readCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		msgType, data, err := conn.Read(readCtx)
+		cancel()
 		if err != nil {
 			return
 		}

@@ -29,6 +29,24 @@ const (
 	turnRelayPortMax = 55000
 )
 
+// leveledLogger adapts the standard logger to pion/logging's interface so
+// TURN auth failures land in the same log stream as everything else.
+type leveledLogger struct{ logger *log.Logger }
+
+func (l *leveledLogger) logf(format string, args ...interface{}) {
+	l.logger.Printf("TURN: "+format, args...)
+}
+func (l *leveledLogger) Trace(msg string)                          {}
+func (l *leveledLogger) Tracef(format string, args ...interface{}) {}
+func (l *leveledLogger) Debug(msg string)                          {}
+func (l *leveledLogger) Debugf(format string, args ...interface{}) {}
+func (l *leveledLogger) Info(msg string)                           { l.logf("%s", msg) }
+func (l *leveledLogger) Infof(format string, args ...interface{})  { l.logf(format, args...) }
+func (l *leveledLogger) Warn(msg string)                           { l.logf("%s", msg) }
+func (l *leveledLogger) Warnf(format string, args ...interface{})  { l.logf(format, args...) }
+func (l *leveledLogger) Error(msg string)                          { l.logf("%s", msg) }
+func (l *leveledLogger) Errorf(format string, args ...interface{}) { l.logf(format, args...) }
+
 // StartTURN runs the pion/turn server (which also answers STUN binding
 // requests on the same UDP port - that is the backend's STUN server). Call
 // Close on the returned server to stop it. TCP and UDP share the port so
@@ -68,16 +86,17 @@ func StartTURN(opts TURNOptions, logger *log.Logger) (*turn.Server, error) {
 	// so per-session credentials never need a long-lived password store.
 	server, err := turn.NewServer(turn.ServerConfig{
 		Realm:       opts.Realm,
-		AuthHandler: turn.LongTermTURNRESTAuthHandler(opts.Secret, logger),
+		AuthHandler: turn.LongTermTURNRESTAuthHandler(opts.Secret, &leveledLogger{logger}),
 		PacketConnConfigs: []turn.PacketConnConfig{
 			{
 				PacketConn: udpListener,
+				// Net is left nil: Validate() fills in a default stdnet that
+				// picks UDP vs TCP by the method the server calls on it.
 				RelayAddressGenerator: &turn.RelayAddressGeneratorPortRange{
 					RelayAddress: relayIP,
 					Address:      host,
-					Net:          "udp",
-					Min:          turnRelayPortMin,
-					Max:          turnRelayPortMax,
+					MinPort:      turnRelayPortMin,
+					MaxPort:      turnRelayPortMax,
 				},
 			},
 		},
@@ -87,9 +106,8 @@ func StartTURN(opts TURNOptions, logger *log.Logger) (*turn.Server, error) {
 				RelayAddressGenerator: &turn.RelayAddressGeneratorPortRange{
 					RelayAddress: relayIP,
 					Address:      host,
-					Net:          "tcp",
-					Min:          turnRelayPortMin,
-					Max:          turnRelayPortMax,
+					MinPort:      turnRelayPortMin,
+					MaxPort:      turnRelayPortMax,
 				},
 			},
 		},
