@@ -105,7 +105,7 @@ tracks last-activity per viewer and checks it on a 30 s alarm). Device IDs:
 - Routes above; pages are plain static assets (no CDN, matching today's
   offline-first templates). `devices.html`/`view.html` carry over with the same
   card markup, 5 s poll, and the existing canvas/datachannel JS.
-- **Auth**: constant `AUTH_TOKEN` secret. Device sockets: `Authorization:
+- **Auth**: `SHARED_AUTH_TOKEN` secret. Device sockets: `Authorization:
   Bearer <token>` header. Browser: `POST /api/login {token}` sets
   `esp32cam_session` cookie (HttpOnly, Secure, SameSite=Lax, value = token);
   every page fetch and the WS upgrade (same-origin, cookies sent
@@ -140,9 +140,9 @@ tracks last-activity per viewer and checks it on a 30 s alarm). Device IDs:
 - Prerequisite: one TURN key per account (dashboard → Calls, or
   `POST /accounts/{id}/calls/turn_keys` via API). **Done 2026-09-02**: key
   "ESP32-Surveillance", uid `384eca229df5f03573623c75607f02f1`. Key ID + API
-  token are stored as Worker secrets (`TURN_KEY_ID`, `TURN_KEY_API_TOKEN` via
-  `wrangler secret put`) — the API token is a long-term secret and must never
-  be committed or reach devices/browsers.
+  token are stored as Worker secrets (`TURN_SERVER_ID`, `TURN_SERVER_TOKEN`,
+  set 2026-09-02) — the API token is a long-term secret and must never be
+  committed or reach devices/browsers.
 - Per viewing session the DO calls
   `POST https://rtc.live.cloudflare.com/v1/turn/keys/{id}/credentials/generate-ice-servers`
   (Bearer token, `{"ttl": 7200}` — 2 h, under the 48 h max, matching today's
@@ -250,8 +250,8 @@ this revision (manual flash, as today).
     smoke-test the DO without hardware.
 - New workflow `.github/workflows/cloudflare.yml`: type-check/lint on PR only.
   Deployment stays manual (`npx wrangler deploy`) per the existing workflow
-  split (Harry pushes/deploys; I commit). Secrets: `AUTH_TOKEN`,
-  `TURN_KEY_ID`, `TURN_KEY_API_TOKEN` set via `wrangler secret`.
+  split (Harry pushes/deploys; I commit). Secrets: `SHARED_AUTH_TOKEN`,
+  `TURN_SERVER_ID`, `TURN_SERVER_TOKEN` set via `wrangler secret`.
 - `backend/` is **left untouched** until the Cloudflare path has survived a
   burn-in period, then deleted in a follow-up commit (with README/ROADMAP
   updates).
@@ -266,10 +266,9 @@ this revision (manual flash, as today).
   active).
 - D1 `esp32-surveillance` (`c154a353-0375-44c1-a592-a26025fdc39e`) — bound to
   the worker as `esp32-surveillance-db` (verified via API).
-- Secrets: set by Harry. Cloudflare secrets are write-only, so names/values
-  can't be verified via API — the code will expect `AUTH_TOKEN`,
-  `TURN_KEY_ID`, `TURN_KEY_API_TOKEN`; rename/add in the dashboard if the
-  existing secret differs.
+- Secrets: set by Harry (`SHARED_AUTH_TOKEN`, `TURN_SERVER_ID`,
+  `TURN_SERVER_TOKEN` — 2026-09-02). Cloudflare secrets are write-only, so
+  values can't be verified via API.
 
 **Phase 1 — Cloudflare side:** wrangler skeleton; Worker routes + auth + static
 pages; `DeviceHub` with full protocol parity; D1 presence; TURN minting;
