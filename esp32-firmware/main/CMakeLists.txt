@@ -4,7 +4,7 @@ idf_component_register(
     INCLUDE_DIRS "."
     PRIV_REQUIRES esp32-camera esp_websocket_client esp_peer esp_http_client esp_https_ota
                   cjson esp_wifi esp_netif esp_event nvs_flash mbedtls
-                  esp_http_server esp_driver_gpio esp_driver_ledc
+                  esp_http_server esp_driver_gpio esp_driver_ledc bootloader_support
 )
 
 # Derive APP_VERSION from git describe, or fallback to "dev"
