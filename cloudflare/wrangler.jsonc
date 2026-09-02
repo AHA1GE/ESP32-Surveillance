@@ -1,0 +1,38 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "esp32-surveillance",
+  "main": "src/index.ts",
+  // Set to today's date
+  "compatibility_date": "2026-09-02",
+  "assets": {
+    "directory": "assets",
+    "binding": "ASSETS",
+    // Pages and the API need the auth cookie check, so the Worker runs first
+    // for them; everything else (favicons etc.) is served asset-first.
+    // The WS routes (/signaling/*, /view-signaling/*) never match assets and
+    // reach the Worker anyway.
+    "run_worker_first": ["/", "/view/*", "/api/*"]
+  },
+  "routes": [{ "pattern": "espcam.dofor.fun", "custom_domain": true }],
+  "d1_databases": [
+    {
+      // Binding name must be a valid JS identifier; the dashboard's
+      // "esp32-surveillance-db" is replaced by this name on the first deploy
+      // (same database_id - the data is untouched).
+      "binding": "esp32_surveillance_db",
+      "database_name": "esp32-surveillance",
+      "database_id": "c154a353-0375-44c1-a592-a26025fdc39e"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "DEVICE_HUB", "class_name": "DeviceHub" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DeviceHub"] }],
+  "vars": {
+    // TURN key id (public identifier, not the API token).
+    "TURN_SERVER_ID": "384eca229df5f03573623c75607f02f1"
+  }
+  // Secrets (set on the worker, NOT in this file - values must never be
+  // committed): SHARED_AUTH_TOKEN (secret_text), TURN_SERVER_TOKEN
+  // (secret_text, the TURN key API token).
+}

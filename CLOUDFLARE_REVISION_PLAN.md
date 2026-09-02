@@ -3,7 +3,8 @@
 Revise the platform from a self-hosted Go backend (Docker + embedded coturn-style
 TURN) to Cloudflare serverless: Workers + Durable Objects + D1 for signaling,
 UI, and presence; Cloudflare Realtime TURN/STUN for NAT traversal; the ESP32
-itself as a LAN fallback. Status: **design sketch, pre-implementation**.
+itself as a LAN fallback. Status: **Phase 1 (Cloudflare side) implemented and
+smoke-tested against `wrangler dev`; Phase 2 (firmware) pending.**
 
 ## Context
 
@@ -134,6 +135,15 @@ tracks last-activity per viewer and checks it on a 30 s alarm). Device IDs:
   list's "last seen" stays current without an HTTP heartbeat.
 - TURN creds: cached in the DO per session; re-mint only when a new viewer
   claims the slot.
+- **workerd close-delivery quirk**: closes issued from `fetch`/`waitUntil`/
+  `alarm`/`webSocketMessage` contexts on a hibernatable DO socket are *not*
+  sent immediately — workerd flushes them ~10 s later (empirically pinned down
+  with a scratch probe project, 2026-09-02; closes issued from the socket's own
+  `webSocketClose` handler do deliver immediately). Codes and reasons arrive
+  intact, so wire parity holds; only the close-frame latency shifts. Mitigation:
+  terminal JSON (`error`/`peer_gone`) is sent first and arrives instantly, and
+  well-behaved clients (the browser view page, the firmware) close on receiving
+  it. The smoke test waits 15 s for server closes. See §7.
 
 ### 2.3 TURN / STUN (Cloudflare Realtime TURN)
 
@@ -164,21 +174,27 @@ tracks last-activity per viewer and checks it on a 30 s alarm). Device IDs:
   UDP first (the firmware picks the `transport=udp` entry). The browser
   benefits from TCP/TLS fallbacks; the firmware uses only UDP by design.
   Skip the alternate ports 53/80/443 from the CF response — not useful here.
+  **Verified 2026-09-02**: a real minted username is exactly 128 hex chars
+  (the §3.1 `ICE_CRED_MAX` → 128 bump is mandatory), and the response contains
+  the alternate ports as expected.
 - Per-allocation limits (50–100 Mbps, 5–10 kpps) are far above one JPEG
   stream; cost is $0.05/GB outbound after the shared 1 TB/mo free tier —
   effectively $0 for personal use, since LAN viewing never touches TURN.
 
 ### 2.4 D1 `esp32-surveillance`
 
-Created (`c154a353-0375-44c1-a592-a26025fdc39e`) and bound to the worker as
-**`esp32-surveillance-db`** (verified via API). `wrangler.jsonc` must declare
-the same binding name so deploys don't create a duplicate; code accesses it
-as `env["esp32-surveillance-db"]` (bracket notation — not a valid JS
-identifier with dashes).
+Created (`c154a353-0375-44c1-a592-a26025fdc39e`). Bound to the worker as
+**`esp32_surveillance_db`** (underscores — a valid JS identifier, unlike the
+dashboard's dashed name; `wrangler.jsonc` declares the same binding, so
+deploys reuse the existing database instead of creating a duplicate).
 
-`devices(id TEXT PRIMARY KEY, online INTEGER, first_seen TEXT, last_seen TEXT)`.
-`/api/devices` keeps the exact contract `[{id, online, lastSeen}]` sorted by id
-(ui.go:88-90).
+Schema is initialized **in code** on first access (the ztmdl
+room-reserve-system pattern): a `_meta` table records `schema_version`, and
+`CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY, online INTEGER,
+first_seen TEXT, last_seen TEXT)` runs when the version is missing — no
+manual `wrangler d1 execute` step. `schema.sql` stays in the repo as the
+authoritative reference. `/api/devices` keeps the exact contract
+`[{id, online, lastSeen}]` sorted by id (ui.go:88-90).
 
 ## 3. Firmware changes (`esp32-firmware/`)
 
@@ -239,15 +255,21 @@ this revision (manual flash, as today).
 
 - New `cloudflare/` — wrangler project:
   - `src/index.ts` (fetch handler, auth, routes), `src/devicehub.ts` (DO),
-    `src/turn.ts` (cred minting + normalization), `assets/` (devices.html,
-    view.html adapted).
+    `src/db.ts` (in-code schema init), `src/turn.ts` (cred minting +
+    normalization), `assets/` (devices.html, view.html adapted).
   - `wrangler.jsonc`: custom domain `espcam.dofor.fun` (already attached to the
-    worker), DO binding `DeviceHub` (hibernation), D1 binding
-    `esp32-surveillance-db` (matches the dashboard binding name), static
-    assets, compatibility date ≥ DO hibernation.
-  - `schema.sql` for D1; `scripts/sim-device.mjs` — a Node WS client that
-    impersonates a device (connect, receive offer, send canned answer/ice) to
-    smoke-test the DO without hardware.
+    worker), DO binding `DEVICE_HUB` (hibernation) with `DeviceHub` exported
+    from the entrypoint, D1 binding `esp32_surveillance_db`, static assets
+    (`run_worker_first` for `/`, `/view/*`, `/api/*`), compatibility date
+    2026-09-02.
+  - `schema.sql` (reference); `scripts/sim-device.mjs` — a Node WS client that
+    impersonates a device (connect, receive offer, send canned answer/ice);
+    `scripts/smoke-test.mjs` — one-shot e2e suite (auth gates, login flow, D1
+    presence, full negotiation, busy/offline/supersede) with unique per-run
+    device IDs so stale local-D1 rows can't trip assertions.
+  - `.dev.vars.example` for local `SHARED_AUTH_TOKEN`; `.dev.vars` is
+    gitignored. Locally, without `TURN_SERVER_TOKEN`, minting degrades to
+    stun-only (smoke test reports `turn=stun-only`).
 - New workflow `.github/workflows/cloudflare.yml`: type-check/lint on PR only.
   Deployment stays manual (`npx wrangler deploy`) per the existing workflow
   split (Harry pushes/deploys; I commit). Secrets: `SHARED_AUTH_TOKEN`,
@@ -264,18 +286,27 @@ this revision (manual flash, as today).
 - Worker `esp32-surveillance` (dashboard-created).
 - Custom domain `espcam.dofor.fun` → that worker (zone dofor.fun, cert
   active).
-- D1 `esp32-surveillance` (`c154a353-0375-44c1-a592-a26025fdc39e`) — bound to
-  the worker as `esp32-surveillance-db` (verified via API).
+- D1 `esp32-surveillance` (`c154a353-0375-44c1-a592-a26025fdc39e`) — created
+  and bound to the worker (verified via API). The dashboard-created binding
+  was named `esp32-surveillance-db`; the wrangler project redeclares it as
+  `esp32_surveillance_db` (valid JS identifier), so the first `wrangler
+  deploy` replaces the binding name but keeps the same database_id.
 - Secrets/vars: set by Harry and verified via API (the script bindings list
   exposes names, and plain-text values — only `secret_text` values are
   hidden): `SHARED_AUTH_TOKEN` (secret_text), `TURN_SERVER_ID` (plain_text,
   value matches the TURN key uid), `TURN_SERVER_TOKEN` (secret_text).
 
-**Phase 1 — Cloudflare side:** wrangler skeleton; Worker routes + auth + static
-pages; `DeviceHub` with full protocol parity; D1 presence; TURN minting;
-sim-device smoke test + `wrangler dev` against the real `view.html` in a
-browser (mock device via script) and a real firmware device pointed at a
-preview worker.
+**Phase 1 — Cloudflare side: DONE (2026-09-02).** wrangler skeleton; Worker
+routes + auth + static pages; `DeviceHub` with full protocol parity; D1
+presence (in-code schema init); TURN minting + normalization. The smoke suite
+passes end-to-end against `wrangler dev` (30/30 checks: auth gates, login
+flow, D1 online presence, ice_servers → offer → answer → ice relay, busy
+1008, offline error, peer_gone + close 1000 on disconnect, supersede close
+1000 + viewer eviction on reconnect). Known quirk: server closes from
+waitUntil/alarm contexts arrive ~10 s late (§2.2, §7) — terminal JSON
+messages are unaffected. Remaining sub-tasks: Harry deploys to the preview
+worker and does a browser test against the real `view.html` with a real
+firmware device (Phase 2 work).
 
 **Phase 2 — Firmware:** §3 changes; CI build; flash one camera; one-time portal
 reconfiguration; verify: cloud live view, LAN-direct pair, forced relay (block
@@ -288,10 +319,13 @@ implemented.
 
 ## 6. Verification checklist
 
-1. `npx wrangler dev` + sim-device: viewer page gets `ice_servers`, offer
-   reaches sim device with `stun`/`turn` attached, answer/ice round-trip,
-   second viewer gets `busy` + 1008, offline device gets `device offline`,
-   never-seen ID gets 404.
+1. ✅ `npx wrangler dev` + `scripts/smoke-test.mjs` (2026-09-02): viewer gets
+   `ice_servers`, offer reaches sim device with `stun`/`turn` attached,
+   answer/ice round-trip, second viewer gets `busy` + close 1008, offline
+   device gets `device offline`, never-seen ID gets 404, device disconnect →
+   `peer_gone` + close 1000, reconnect → supersede close 1000 + viewer
+   eviction. (Local runs are stun-only unless `TURN_SERVER_TOKEN` is set;
+   turn-minting itself is covered by a direct API call.)
 2. Real device: LED solid on connect; `/api/devices` shows online; list page
    renders; kill viewer tab → device gets `viewer_gone` (log), PC torn down.
 3. Relay path: from a different network (or cell), confirm via the viewer's
@@ -307,8 +341,22 @@ implemented.
 ## 7. Risks and gotchas
 
 - **CF TURN username length** — resolved by `ICE_CRED_MAX` → 128 (§3.1);
-  verify against a real minted credential in Phase 1, before any firmware
-  change.
+  verified against a real minted credential (exactly 128 hex chars,
+  2026-09-02).
+- **workerd close-delivery quirk (pinned down empirically, 2026-09-02)** — on
+  hibernatable DO sockets, `ws.close()` issued from `fetch`, `waitUntil`,
+  `alarm`, or `webSocketMessage` contexts is not sent immediately: workerd
+  flushes it ~10 s later (measured 9.5 s in a scratch probe; closes issued
+  from the socket's own `webSocketClose` handler deliver at once; re-close
+  attempts on an already-closing socket are no-ops; plain-Worker sockets are
+  unaffected). Codes/reasons arrive intact, so the wire protocol is preserved
+  — only the close frame's timing shifts. Consequences: busy/offline
+  rejections and supersede/eviction closes land ~10 s after the terminal
+  JSON (`error`/`peer_gone`), which arrives instantly; idle kills (60/90 s)
+  land ~10 s after the alarm fires. The browser and firmware already treat
+  the terminal JSON as the signal and close their ends. Do **not** "fix"
+  this by closing from a different context without re-probing — message-
+  context closes never flushed at all in probing.
 - **Browsers can't set WS headers** — cookie flow (§2.1); token never appears
   in URLs (no query-param leak into logs).
 - **Workers can't send WS control pings to the device** — app-level `ping`

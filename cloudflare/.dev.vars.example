@@ -1,0 +1,6 @@
+# Copy to .dev.vars and fill in real values for local `wrangler dev`.
+# .dev.vars is gitignored - never commit real values.
+# Values live on the deployed worker as secrets (dashboard -> Worker ->
+# Settings -> Variables and Secrets).
+SHARED_AUTH_TOKEN=change-me
+TURN_SERVER_TOKEN=change-me
