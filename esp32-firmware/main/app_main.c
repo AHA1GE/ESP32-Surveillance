@@ -8,7 +8,7 @@
 
 #include "wifi.h"
 #include "camera.h"
-#include "ws_stream.h"
+#include "webrtc_stream.h"
 #include "ota.h"
 #include "config_store.h"
 #include "device_id.h"
@@ -29,8 +29,7 @@
 
 static void streaming_task(void *pvParameters)
 {
-    esp_websocket_client_handle_t ws_client = (esp_websocket_client_handle_t)pvParameters;
-
+    (void)pvParameters;
     ESP_LOGI(TAG, "Starting streaming task");
 
     const TickType_t frame_period = pdMS_TO_TICKS(1000 / STREAM_TARGET_FPS);
@@ -60,20 +59,20 @@ static void streaming_task(void *pvParameters)
             }
 
             size_t frame_len = fb->len;
-            uint8_t *staging = ws_stream_staging_buffer();
+            uint8_t *staging = webrtc_stream_staging_buffer();
             esp_err_t err;
-            if (staging && frame_len <= ws_stream_staging_size()) {
+            if (staging && frame_len <= webrtc_stream_staging_size()) {
                 /* Copy the JPEG out of the framebuffer and release it before
                  * the (blocking) send, so the camera keeps capturing while
-                 * this frame drains over WiFi. */
+                 * this frame drains over the datachannel. */
                 memcpy(staging, fb->buf, frame_len);
                 camera_release(fb);
-                err = ws_stream_send_frame(ws_client, staging, frame_len);
+                err = webrtc_stream_send_frame(staging, frame_len);
             } else {
                 /* No staging (allocation failed at boot, or an oversized
                  * frame): fall back to holding the framebuffer for the whole
                  * send, the pre-staging behavior. */
-                err = ws_stream_send_frame(ws_client, fb->buf, frame_len);
+                err = webrtc_stream_send_frame(fb->buf, frame_len);
                 camera_release(fb);
             }
 
@@ -84,6 +83,11 @@ static void streaming_task(void *pvParameters)
             } else if (err == ESP_ERR_INVALID_SIZE) {
                 frames_invalid++;
             } else if (err == ESP_ERR_INVALID_STATE) {
+                /* No datachannel (no viewer) - frame intentionally not sent. */
+                frames_dropped++;
+            } else if (err == ESP_ERR_NO_MEM) {
+                /* WOULD_BLOCK: datachannel send cache full. The frame is
+                 * dropped whole and the next one resyncs on its Start flag. */
                 frames_dropped++;
             }
         }
@@ -169,17 +173,13 @@ static void run_normal_mode(const device_config_t *cfg)
     device_id_get(device_id, sizeof(device_id));
     ESP_LOGI(TAG, "Device ID: %s", device_id);
 
-    ESP_LOGI(TAG, "WebSocket client connecting...");
-    esp_websocket_client_handle_t ws_client = NULL;
-    while (!ws_client) {
-        ws_client = ws_stream_init(device_id, cfg->backend_host, (uint16_t)cfg->backend_port);
-        if (!ws_client) {
-            ESP_LOGE(TAG, "WebSocket client init failed, retrying in 10s");
-            vTaskDelay(pdMS_TO_TICKS(10000));
-        }
+    ESP_LOGI(TAG, "WebRTC signaling connecting...");
+    while (webrtc_stream_init(cfg, device_id) != ESP_OK) {
+        ESP_LOGE(TAG, "WebRTC stream init failed, retrying in 10s");
+        vTaskDelay(pdMS_TO_TICKS(10000));
     }
 
-    xTaskCreatePinnedToCore(streaming_task, "streaming", 4096, ws_client, 5, NULL, 1);
+    xTaskCreatePinnedToCore(streaming_task, "streaming", 4096, NULL, 5, NULL, 1);
 
     while (1) {
         vTaskDelay(portMAX_DELAY);

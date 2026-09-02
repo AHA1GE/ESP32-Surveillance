@@ -4,6 +4,7 @@ description: "ESP32-CAM WebSocket streaming firmware"
 dependencies:
   espressif/esp32-camera: "*"
   espressif/esp_websocket_client: "*"
+  espressif/esp_peer: "^1.5.4"
   espressif/cjson: "*"
   idf: ">=5.1"
 

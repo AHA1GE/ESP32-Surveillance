@@ -1,0 +1,586 @@
+#include "webrtc_stream.h"
+
+#include "led.h"
+
+#include <cJSON.h>
+#include <esp_heap_caps.h>
+#include <esp_log.h>
+#include <esp_peer.h>
+#include <esp_peer_default.h>
+#include <esp_websocket_client.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <stdio.h>
+#include <string.h>
+
+#define TAG "webrtc_stream"
+
+/* Chunked JPEG wire format: payload chunks of at most this many bytes,
+ * framed as [1B flag][4B big-endian length][payload]. The browser side of
+ * the protocol is view.html. */
+#define CHUNK_PAYLOAD_SIZE  10000
+#define CHUNK_WIRE_SIZE     (CHUNK_PAYLOAD_SIZE + 5)
+#define CHUNK_FLAG_START    0x01
+#define CHUNK_FLAG_END      0x02
+
+/* How long one signaling send (answer SDP / candidate) may block. */
+#define WS_SEND_TIMEOUT_MS  2000
+
+/* Answer SDPs and candidate lines are tiny (a browser offer is < 6KB even
+ * with embedded candidates); 8KB is generous and keeps the static buffer
+ * off the heap. */
+#define MSG_BUF_SIZE        8192
+
+/* VGA JPEGs are capped at ~60KiB by the camera driver's width*height/5 fb
+ * allocation, so 64KiB always holds a full frame. PSRAM, same rationale as
+ * the old ws_stream staging buffer. */
+#define STAGING_SIZE        (64 * 1024)
+
+/* ICE servers: backend-provided STUN + TURN (max 2 STUN entries, one TURN
+ * triple) plus headroom. URLs are copied into static storage because
+ * esp_peer keeps the pointers. */
+#define MAX_ICE_SERVERS     4
+#define ICE_URL_MAX         127
+#define ICE_CRED_MAX        64
+
+#define PEER_TASK_STACK     (12 * 1024)
+#define PEER_LOOP_PERIOD_MS 10
+
+#define DC_LABEL            "video_data"
+
+static esp_websocket_client_handle_t s_ws;
+static esp_peer_handle_t s_peer;
+static uint8_t *s_staging;
+static uint8_t *s_chunk; /* PSRAM: one wire-frame chunk, reused per send */
+
+/* Cross-task state. on_state runs on the peer task (inside main_loop),
+ * the ws event handler on the websocket task, and send_frame on the
+ * streaming task - so these are all volatile. */
+static volatile bool s_dc_open;
+static volatile esp_peer_state_t s_peer_state = ESP_PEER_STATE_DISCONNECTED;
+
+/* ICE server storage, filled when an offer (with attached STUN/TURN)
+ * arrives and reused for the lifetime of the peer. */
+static esp_peer_ice_server_cfg_t s_ice_servers[MAX_ICE_SERVERS];
+static char s_ice_urls[MAX_ICE_SERVERS][ICE_URL_MAX + 1];
+static char s_ice_user[ICE_CRED_MAX + 1];
+static char s_ice_psw[ICE_CRED_MAX + 1];
+
+static int on_peer_state(esp_peer_state_t state, void *ctx)
+{
+    s_peer_state = state;
+    switch (state) {
+        case ESP_PEER_STATE_CONNECTED:
+            ESP_LOGI(TAG, "Peer connected");
+            break;
+        case ESP_PEER_STATE_DATA_CHANNEL_CONNECTED: {
+            /* SCTP is up: create the unordered video channel. The browser
+             * side accepts it via ondatachannel (view.html). */
+            esp_peer_data_channel_cfg_t ch_cfg = {
+                .type = ESP_PEER_DATA_CHANNEL_PARTIAL_RELIABLE_RETX,
+                .ordered = false,
+                .label = DC_LABEL,
+                .max_retransmit_count = 1,
+            };
+            int ret = esp_peer_create_data_channel(s_peer, &ch_cfg);
+            if (ret != ESP_PEER_ERR_NONE) {
+                ESP_LOGE(TAG, "create data channel failed: %d", ret);
+            }
+            break;
+        }
+        case ESP_PEER_STATE_DATA_CHANNEL_OPENED:
+            s_dc_open = true;
+            ESP_LOGI(TAG, "Data channel opened");
+            break;
+        case ESP_PEER_STATE_DISCONNECTED:
+        case ESP_PEER_STATE_CONNECT_FAILED:
+        case ESP_PEER_STATE_DATA_CHANNEL_CLOSED:
+            s_dc_open = false;
+            ESP_LOGW(TAG, "Peer state %d - session over", (int)state);
+            break;
+        default:
+            ESP_LOGD(TAG, "Peer state %d", (int)state);
+            break;
+    }
+    return 0;
+}
+
+/* Fires on the peer task for every message esp_peer generates for the
+ * remote side: our answer SDP and our ICE candidates. Forward them over
+ * the signaling socket as JSON. A single static buffer is enough - the
+ * callback only ever runs inside esp_peer_main_loop(). */
+static int on_peer_msg(esp_peer_msg_t *msg, void *ctx)
+{
+    if (!s_ws) {
+        return 0;
+    }
+    if (msg->size <= 0 || (size_t)msg->size >= MSG_BUF_SIZE) {
+        ESP_LOGE(TAG, "peer msg too big: %d", msg->size);
+        return 0;
+    }
+
+    /* cJSON copies its inputs, so copy out of the callback-scoped buffer. */
+    static char buf[MSG_BUF_SIZE];
+    memcpy(buf, msg->data, msg->size);
+    buf[msg->size] = '\0';
+
+    cJSON *root = cJSON_CreateObject();
+    if (msg->type == ESP_PEER_MSG_TYPE_SDP) {
+        cJSON_AddStringToObject(root, "type", "answer");
+        cJSON_AddStringToObject(root, "sdp", buf);
+    } else if (msg->type == ESP_PEER_MSG_TYPE_CANDIDATE) {
+        cJSON_AddStringToObject(root, "type", "ice");
+        cJSON_AddStringToObject(root, "candidate", buf);
+    } else {
+        cJSON_Delete(root);
+        return 0;
+    }
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!json) {
+        return 0;
+    }
+    esp_err_t err = esp_websocket_client_send_text(
+        s_ws, json, (int)strlen(json), pdMS_TO_TICKS(WS_SEND_TIMEOUT_MS));
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "forward %s to backend failed: 0x%x",
+                 msg->type == ESP_PEER_MSG_TYPE_SDP ? "answer" : "ice", err);
+    }
+    free(json);
+    return 0;
+}
+
+static int on_peer_data(esp_peer_data_frame_t *frame, void *ctx)
+{
+    /* Send-only device; an incoming frame is unexpected (and harmless). */
+    ESP_LOGW(TAG, "unexpected data frame: %d bytes", frame->size);
+    return 0;
+}
+
+static void peer_task(void *arg)
+{
+    while (s_peer) {
+        esp_peer_main_loop(s_peer);
+        vTaskDelay(pdMS_TO_TICKS(PEER_LOOP_PERIOD_MS));
+    }
+    vTaskDelete(NULL);
+}
+
+/* Copy a NUL-terminated string into static ICE storage, truncating rather
+ * than overrunning; a truncated URL just fails its own connectivity check
+ * while the rest of the candidates still work. */
+static bool copy_ice_url(char *dst, const char *src)
+{
+    size_t len = strlen(src);
+    if (len == 0 || len > ICE_URL_MAX) {
+        return false;
+    }
+    memcpy(dst, src, len + 1);
+    return true;
+}
+
+/* Rebuild the ICE server table from an offer's attached stun[]/turn{}. */
+static int build_ice_servers(const cJSON *stun, const cJSON *turn)
+{
+    int n = 0;
+
+    if (cJSON_IsArray(stun)) {
+        cJSON *item = NULL;
+        cJSON_ArrayForEach(item, stun) {
+            if (n >= MAX_ICE_SERVERS - 1 || !cJSON_IsString(item)) {
+                break;
+            }
+            if (copy_ice_url(s_ice_urls[n], item->valuestring)) {
+                s_ice_servers[n].stun_url = s_ice_urls[n];
+                s_ice_servers[n].user = NULL;
+                s_ice_servers[n].psw = NULL;
+                n++;
+            }
+        }
+    }
+
+    if (cJSON_IsObject(turn)) {
+        const cJSON *urls = cJSON_GetObjectItem(turn, "urls");
+        if (cJSON_IsArray(urls) && cJSON_GetArraySize(urls) > 0) {
+            /* Prefer the UDP URL; the backend lists udp first, but pick it
+             * explicitly so the order change can't silently break the relay
+             * (esp_peer has no TCP ICE support in this build). */
+            const cJSON *picked = NULL;
+            cJSON *url = NULL;
+            cJSON_ArrayForEach(url, urls) {
+                if (!cJSON_IsString(url)) {
+                    continue;
+                }
+                if (picked == NULL || strstr(url->valuestring, "transport=udp") != NULL) {
+                    picked = url;
+                }
+                if (strstr(url->valuestring, "transport=udp") != NULL) {
+                    break;
+                }
+            }
+            const cJSON *user = cJSON_GetObjectItem(turn, "username");
+            const cJSON *psw = cJSON_GetObjectItem(turn, "credential");
+            if (picked != NULL && cJSON_IsString(user) && cJSON_IsString(psw) &&
+                n < MAX_ICE_SERVERS) {
+                if (copy_ice_url(s_ice_urls[n], picked->valuestring)) {
+                    snprintf(s_ice_user, sizeof(s_ice_user), "%s", user->valuestring);
+                    snprintf(s_ice_psw, sizeof(s_ice_psw), "%s", psw->valuestring);
+                    s_ice_servers[n].stun_url = s_ice_urls[n];
+                    s_ice_servers[n].user = s_ice_user;
+                    s_ice_servers[n].psw = s_ice_psw;
+                    n++;
+                }
+            }
+        }
+    }
+
+    return n;
+}
+
+/* Feed "a=candidate:" lines embedded in a received SDP as separate
+ * candidate messages (mirrors espressif's local_jpeg_stream, which does
+ * the same because browsers with non-trickle ICE pack candidates into the
+ * offer instead of trickling them). */
+static void feed_embedded_candidates(const char *sdp)
+{
+    const char *p = sdp;
+    while ((p = strstr(p, "a=candidate:")) != NULL) {
+        const char *end = strchr(p, '\n');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        while (len > 0 && (p[len - 1] == '\r' || p[len - 1] == '\n')) {
+            len--;
+        }
+        if (len > 0 && len < MSG_BUF_SIZE) {
+            static char cand[MSG_BUF_SIZE];
+            memcpy(cand, p, len);
+            cand[len] = '\0';
+            esp_peer_msg_t cand_msg = {
+                .type = ESP_PEER_MSG_TYPE_CANDIDATE,
+                .data = (uint8_t *)cand,
+                .size = (int)len,
+            };
+            esp_peer_send_msg(s_peer, &cand_msg);
+        }
+        p += 11;
+    }
+}
+
+/* A viewer arrived: (re)start the session as answerer and hand esp_peer
+ * the browser's offer. The attached STUN/TURN replaces whatever a previous
+ * session configured (credentials are minted per session). */
+static void handle_offer(const cJSON *root)
+{
+    const cJSON *sdp = cJSON_GetObjectItem(root, "sdp");
+    if (!cJSON_IsString(sdp)) {
+        ESP_LOGE(TAG, "offer without sdp");
+        return;
+    }
+
+    /* A stale session (viewer reconnected without a clean viewer_gone)
+     * can't answer twice; tear it down first. */
+    if (s_peer_state != ESP_PEER_STATE_DISCONNECTED &&
+        s_peer_state != ESP_PEER_STATE_CLOSED &&
+        s_peer_state != ESP_PEER_STATE_NEW_CONNECTION) {
+        ESP_LOGW(TAG, "offer while in state %d - disconnecting stale session",
+                 (int)s_peer_state);
+        esp_peer_disconnect(s_peer);
+    }
+
+    int num = build_ice_servers(cJSON_GetObjectItem(root, "stun"),
+                                cJSON_GetObjectItem(root, "turn"));
+    int ret = esp_peer_update_ice_info(s_peer, ESP_PEER_ROLE_CONTROLLED,
+                                       num > 0 ? s_ice_servers : NULL, num);
+    if (ret != ESP_PEER_ERR_NONE) {
+        ESP_LOGE(TAG, "update_ice_info failed: %d", ret);
+    }
+
+    ret = esp_peer_new_connection(s_peer);
+    if (ret != ESP_PEER_ERR_NONE) {
+        ESP_LOGE(TAG, "new_connection failed: %d", ret);
+        return;
+    }
+
+    esp_peer_msg_t msg = {
+        .type = ESP_PEER_MSG_TYPE_SDP,
+        .data = (uint8_t *)sdp->valuestring,
+        .size = (int)strlen(sdp->valuestring),
+    };
+    ret = esp_peer_send_msg(s_peer, &msg);
+    if (ret != ESP_PEER_ERR_NONE) {
+        ESP_LOGE(TAG, "send offer to peer failed: %d", ret);
+        return;
+    }
+    ESP_LOGI(TAG, "Offer fed to peer (%d bytes, %d ICE servers)",
+             msg.size, num);
+
+    feed_embedded_candidates(sdp->valuestring);
+}
+
+static void handle_ws_message(const char *data, int len)
+{
+    /* esp_websocket_client delivers text frames NUL-terminated in practice,
+     * but copy to be safe: cJSON_Parse needs a terminator. */
+    char *copy = malloc(len + 1);
+    if (!copy) {
+        ESP_LOGE(TAG, "no heap for ws message (%d)", len);
+        return;
+    }
+    memcpy(copy, data, len);
+    copy[len] = '\0';
+
+    cJSON *root = cJSON_Parse(copy);
+    free(copy);
+    if (!root) {
+        ESP_LOGW(TAG, "unparseable signaling JSON");
+        return;
+    }
+
+    const cJSON *type = cJSON_GetObjectItem(root, "type");
+    if (!cJSON_IsString(type)) {
+        cJSON_Delete(root);
+        return;
+    }
+
+    if (strcmp(type->valuestring, "offer") == 0) {
+        handle_offer(root);
+    } else if (strcmp(type->valuestring, "ice") == 0) {
+        /* Browser candidate -> esp_peer. */
+        const cJSON *cand = cJSON_GetObjectItem(root, "candidate");
+        if (cJSON_IsString(cand)) {
+            esp_peer_msg_t msg = {
+                .type = ESP_PEER_MSG_TYPE_CANDIDATE,
+                .data = (uint8_t *)cand->valuestring,
+                .size = (int)strlen(cand->valuestring),
+            };
+            int ret = esp_peer_send_msg(s_peer, &msg);
+            if (ret != ESP_PEER_ERR_NONE) {
+                ESP_LOGD(TAG, "candidate rejected: %d", ret);
+            }
+        }
+    } else if (strcmp(type->valuestring, "viewer_gone") == 0) {
+        ESP_LOGI(TAG, "Viewer left - tearing down session");
+        esp_peer_disconnect(s_peer);
+        s_dc_open = false;
+    }
+    /* Unknown types are ignored; the protocol grows forward. */
+
+    cJSON_Delete(root);
+}
+
+static void websocket_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id,
+                                    void *event_data)
+{
+    esp_websocket_event_data_t *data = (esp_websocket_event_data_t *)event_data;
+
+    switch (event_id) {
+        case WEBSOCKET_EVENT_CONNECTED:
+            ESP_LOGI(TAG, "Signaling WebSocket connected");
+            led_set_pattern(LED_PATTERN_SOLID);
+            break;
+        case WEBSOCKET_EVENT_DISCONNECTED:
+            ESP_LOGW(TAG, "Signaling WebSocket disconnected");
+            led_set_pattern(LED_PATTERN_FAST_FLASH);
+            esp_peer_disconnect(s_peer);
+            s_dc_open = false;
+            break;
+        case WEBSOCKET_EVENT_DATA:
+            /* One event carries a whole signaling message: buffer_size (8KB)
+             * exceeds the largest SDP/JSON the backend sends us. */
+            handle_ws_message(data->data_ptr, data->data_len);
+            break;
+        case WEBSOCKET_EVENT_ERROR:
+            ESP_LOGE(TAG, "Signaling WebSocket error");
+            led_set_pattern(LED_PATTERN_FAST_FLASH);
+            break;
+        default:
+            break;
+    }
+}
+
+esp_err_t webrtc_stream_init(const device_config_t *cfg, const char *device_id)
+{
+    /* Generated materials persist in internal memory until reset and are
+     * reused for every subsequent handshake - generate exactly once. */
+    if (esp_peer_pre_generate_cert() != ESP_PEER_ERR_NONE) {
+        ESP_LOGE(TAG, "pre_generate_cert failed");
+        return ESP_FAIL;
+    }
+
+    esp_peer_default_cfg_t peer_default = {
+        /* Longer ICE agent timeout: a browser offer over slow wifi plus a
+         * TURN handshake can exceed the 100ms default. */
+        .agent_recv_timeout = 500,
+        .data_ch_cfg = {
+            /* Stale frames are worthless after a stall - drop them fast
+             * instead of the 5000ms default. */
+            .cache_timeout = 1000,
+            /* ~128KB outgoing cache holds several VGA frames mid-flight;
+             * receive side is nearly unused (send-only device). */
+            .send_cache_size = 128 * 1024,
+            .recv_cache_size = 16 * 1024,
+        },
+        /* The device is always the answerer; without this, a disconnect
+         * resets the role to controlling and the next session breaks. */
+        .keep_role = true,
+        .max_candidates = 16,
+    };
+    esp_peer_cfg_t peer_cfg = {
+        .role = ESP_PEER_ROLE_CONTROLLED,
+        .ice_trans_policy = ESP_PEER_ICE_TRANS_POLICY_ALL,
+        .audio_dir = ESP_PEER_MEDIA_DIR_NONE,
+        .video_dir = ESP_PEER_MEDIA_DIR_NONE,
+        .enable_data_channel = true,
+        /* The device creates "video_data" itself once SCTP is up; no
+         * DCEP auto-channel. */
+        .manual_ch_create = true,
+        /* Sessions are driven by offers from the signaling socket; never
+         * retry on our own. */
+        .no_auto_reconnect = true,
+        .on_state = on_peer_state,
+        .on_msg = on_peer_msg,
+        .on_data = on_peer_data,
+        .extra_cfg = &peer_default,
+        .extra_size = sizeof(peer_default),
+    };
+
+    int ret = esp_peer_open(&peer_cfg, esp_peer_get_default_impl(), &s_peer);
+    if (ret != ESP_PEER_ERR_NONE) {
+        ESP_LOGE(TAG, "esp_peer_open failed: %d", ret);
+        s_peer = NULL;
+        return ESP_FAIL;
+    }
+
+    char uri[256];
+    snprintf(uri, sizeof(uri), "ws://%s:%lu/signaling/%s",
+             cfg->backend_host, (unsigned long)cfg->backend_port, device_id);
+
+    esp_websocket_client_config_t websocket_cfg = {
+        .uri = uri,
+        /* The backend's registry holds the device slot; after a drop,
+         * reconnect promptly so the device reappears online. */
+        .reconnect_timeout_ms = 3000,
+        /* Same as the component default, set explicitly to silence the
+         * "using default time out" warning at boot. */
+        .network_timeout_ms = 10000,
+        /* Signaling messages (offer/answer SDPs) are a few KB; the default
+         * 1KiB buffer would churn for every SDP. */
+        .buffer_size = 8 * 1024,
+    };
+
+    s_ws = esp_websocket_client_init(&websocket_cfg);
+    if (!s_ws) {
+        ESP_LOGE(TAG, "Failed to initialize WebSocket client");
+        esp_peer_close(s_peer);
+        s_peer = NULL;
+        return ESP_FAIL;
+    }
+
+    esp_websocket_register_events(s_ws, WEBSOCKET_EVENT_ANY, websocket_event_handler, NULL);
+
+    esp_err_t err = esp_websocket_client_start(s_ws);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start WebSocket client: 0x%x", err);
+        esp_websocket_client_destroy(s_ws);
+        s_ws = NULL;
+        esp_peer_close(s_peer);
+        s_peer = NULL;
+        return ESP_FAIL;
+    }
+
+    /* Now that all failure paths are behind us, bring the peer loop up. */
+    if (xTaskCreatePinnedToCore(peer_task, "peer", PEER_TASK_STACK, NULL, 5, NULL, 0) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create peer task");
+        esp_websocket_client_destroy(s_ws);
+        s_ws = NULL;
+        esp_peer_close(s_peer);
+        s_peer = NULL;
+        return ESP_FAIL;
+    }
+
+    if (!s_staging) {
+        s_staging = heap_caps_malloc(STAGING_SIZE, MALLOC_CAP_SPIRAM);
+        if (!s_staging) {
+            /* Non-fatal: the streaming task falls back to holding the
+             * framebuffer for the whole send (the pre-staging behavior). */
+            ESP_LOGW(TAG, "Staging allocation failed, streaming without staging");
+        }
+    }
+    if (!s_chunk) {
+        s_chunk = heap_caps_malloc(CHUNK_WIRE_SIZE, MALLOC_CAP_SPIRAM);
+        if (!s_chunk) {
+            ESP_LOGE(TAG, "Chunk buffer allocation failed - no PSRAM headroom");
+        }
+    }
+
+    ESP_LOGI(TAG, "WebRTC stream ready: %s", uri);
+    return ESP_OK;
+}
+
+uint8_t *webrtc_stream_staging_buffer(void)
+{
+    return s_staging;
+}
+
+size_t webrtc_stream_staging_size(void)
+{
+    return STAGING_SIZE;
+}
+
+esp_err_t webrtc_stream_send_frame(uint8_t *buf, size_t len)
+{
+    if (!s_peer || !s_chunk) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /* Drop garbage JPEGs (post-stall EV-EOF-OVF/NO-SOI frames are missing
+     * SOI/EOI markers) instead of feeding the browser a corrupt frame. */
+    if (len < 4 || buf[0] != 0xFF || buf[1] != 0xD8 || buf[len - 2] != 0xFF || buf[len - 1] != 0xD9) {
+        ESP_LOGW(TAG, "Dropping invalid JPEG (%u bytes)", (unsigned)len);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    if (!s_dc_open) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    uint8_t *data = buf;
+    size_t left = len;
+    while (left > 0) {
+        size_t n = left > CHUNK_PAYLOAD_SIZE ? CHUNK_PAYLOAD_SIZE : left;
+        bool first = (data == buf);
+        bool last = (n == left);
+
+        s_chunk[0] = (first ? CHUNK_FLAG_START : 0) | (last ? CHUNK_FLAG_END : 0);
+        s_chunk[1] = (n >> 24) & 0xff;
+        s_chunk[2] = (n >> 16) & 0xff;
+        s_chunk[3] = (n >> 8) & 0xff;
+        s_chunk[4] = n & 0xff;
+        memcpy(s_chunk + 5, data, n);
+
+        esp_peer_data_frame_t frame = {
+            .type = ESP_PEER_DATA_CHANNEL_DATA,
+            .data = s_chunk,
+            .size = (int)n + 5,
+        };
+        int ret = esp_peer_send_data(s_peer, &frame);
+        if (ret == ESP_PEER_ERR_WOULD_BLOCK) {
+            /* The data channel cache is full. Never block or retry-loop
+             * here - that backs the pipeline up into the camera (the
+             * faccab9 failure). Drop the rest of the frame; the browser
+             * resyncs on the next Start flag. */
+            ESP_LOGW(TAG, "Data channel full - dropping rest of frame (%u of %u bytes sent)",
+                     (unsigned)(data - buf), (unsigned)len);
+            return ESP_ERR_NO_MEM;
+        }
+        if (ret != ESP_PEER_ERR_NONE) {
+            ESP_LOGE(TAG, "send_data failed: %d", ret);
+            return ESP_FAIL;
+        }
+
+        data += n;
+        left -= n;
+    }
+
+    return ESP_OK;
+}

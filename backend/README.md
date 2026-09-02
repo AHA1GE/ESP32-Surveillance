@@ -1,24 +1,25 @@
 # Backend
 
-Go server that accepts a WebSocket stream of JPEG frames from one or more
-ESP32-CAM devices, transcodes each device's stream with a per-device `ffmpeg`
-subprocess, and serves both a live HLS view and a browsable MP4 archive, plus
-a built-in web UI.
+Go server that relays WebRTC signaling between browser viewers and ESP32-CAM
+devices, and runs an embedded TURN/STUN server for NAT traversal. Media
+frames travel peer-to-peer (or through TURN) and never touch the backend -
+there is no storage, no ffmpeg, no recording.
 
 ## Run
 
 ```bash
-docker run -d -p 80:80 -p 8080:8080 \
-  -v surveillance-storage:/storage \
+docker run -d -p 80:80 -p 8080:8080 -p 3478:3478/udp -p 3478:3478/tcp \
+  -e TURN_PUBLIC_ADDR=<your-server-ip>:3478 \
+  -e TURN_SECRET=<long-random-string> \
   ghcr.io/aha1ge/esp32-surveillance/backend:latest
 ```
 
-`/storage` inside the container is the mount point for all recorded clips and
-live stream data. The example uses a named volume `surveillance-storage`
-(survives container replacement); use `-v ./data:/storage` for a local-folder
-bind mount instead.
+`TURN_PUBLIC_ADDR` is the address peers use to reach the server (IP:port).
+Without `TURN_PUBLIC_ADDR` + `TURN_SECRET` the server starts anyway, but
+announces no ICE servers: connections only work when the browser can reach
+the device's host candidates directly (same LAN).
 
-Or locally (requires Go 1.22+ and `ffmpeg` on PATH):
+Or locally (requires Go 1.22+):
 
 ```bash
 go mod tidy   # generates go.sum - see note below
@@ -31,45 +32,35 @@ Locally the web UI is served on `LISTEN_ADDR` (`:8080`) — the extra
 ## Web UI
 
 Open `http://<backend>/` for the device list (with online status, refreshed
-every 5 s). Click a device for its live view page: an HLS player plus the
-recorded clip list with download links. The player script (hls.js, embedded
-in the binary) needs no internet access. To upgrade hls.js:
-
-```bash
-curl -L -o internal/httpapi/ui/assets/hls.light.min.js \
-  https://cdn.jsdelivr.net/npm/hls.js@1.7.1/dist/hls.light.min.js
-# then re-add the Apache-2.0 license banner at the top (see the current file)
-```
+every 5 s). Click a device for its live view page: the browser negotiates a
+WebRTC DataChannel with the device through the backend's signaling relay and
+renders the JPEG frames onto a canvas. Nothing is embedded from CDNs; the
+page works offline.
 
 ## Endpoints
 
 | Path | Description |
 |---|---|
 | `GET /` | Device list page (HTML) |
-| `GET /view/{id}` | Per-device page: live HLS player + recorded clip list (HTML) |
+| `GET /view/{id}` | Per-device live view page (HTML + WebRTC) |
 | `GET /api/devices` | JSON list of known devices with online status |
-| `GET /static/hls.light.min.js` | Vendored hls.js bundle (embedded in the binary) |
-| `GET /ingest/{deviceID}` (WS upgrade) | Where firmware connects and pushes binary JPEG frames |
-| `GET /live/{id}/{file}` | HLS manifest (`index.m3u8`) and segments for near-real-time viewing |
-| `GET /archive/{id}` | JSON list of recorded clips for a device |
-| `GET /archive/{id}/{file}` | Download a specific recorded `.mp4` clip |
+| `GET /signaling/{deviceID}` (WS upgrade) | Device signaling socket: firmware connects, receives offers/ICE, sends answers/ICE |
+| `GET /view-signaling/{deviceID}` (WS upgrade) | Viewer signaling socket: browser connects, receives ICE servers, exchanges offer/answer/ICE with the device |
+| UDP/TCP `3478` | Embedded TURN relay (coturn-style REST credentials) + STUN on the same port |
 
-Point VLC or hls.js at `http://<backend>:8080/live/<deviceID>/index.m3u8` for
-live viewing.
+One viewer at a time per device; a second viewer is rejected with a "busy"
+error until the first disconnects.
 
 ## Configuration (environment variables)
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `LISTEN_ADDR` | `:8080` | HTTP listen address |
-| `UI_LISTEN_ADDR` | `""` (disabled; `:80` in the Docker image) | Optional extra HTTP listener for the web UI |
-| `STORAGE_ROOT` | `./storage` | Root directory for per-device live/archive data |
-| `FFMPEG_PATH` | `ffmpeg` | ffmpeg binary path/name |
-| `HLS_SEGMENT_SECONDS` | `4` | Live HLS segment duration |
-| `HLS_LIVE_WINDOW_SEGMENTS` | `10` | Number of segments kept in the live sliding window |
-| `ARCHIVE_SEGMENT_SECONDS` | `300` | Archive clip duration (independent of the live window) |
-| `ARCHIVE_RETENTION_DAYS` | `7` | Archive files older than this are deleted |
-| `RETENTION_CHECK_MINUTES` | `5` | How often the retention sweep runs |
+| `LISTEN_ADDR` | `:8080` | HTTP/WS listen address (signaling + API + UI) |
+| `UI_LISTEN_ADDR` | `""` (disabled; `:80` in the Docker image) | Optional extra HTTP listener |
+| `TURN_LISTEN_ADDR` | `:3478` | TURN/STUN listen address |
+| `TURN_PUBLIC_ADDR` | `""` | IP:port announced to peers; empty disables TURN |
+| `TURN_SECRET` | `""` | REST-credential secret; empty disables TURN |
+| `TURN_CRED_HOURS` | `2` | Lifetime of the per-session TURN credentials minted for each viewer |
 
 ## Why there's no `go.sum`
 

@@ -8,83 +8,244 @@
   :root { color-scheme: dark; }
   body { font-family: system-ui, sans-serif; background: #111; color: #eee; margin: 0; padding: 1rem; }
   a { color: #6cf; }
-  video { width: 100%; max-height: 70vh; background: #000; border-radius: 8px; }
+  canvas { width: 100%; max-height: 70vh; background: #000; border-radius: 8px; display: block; }
   h1 { font-size: 1.4rem; }
   #status { font-weight: normal; }
   #status.online { color: #3c6; }
   #status.offline { color: #999; }
   #error { color: #c66; }
-  #clips { margin-top: 1rem; }
-  #clips ul { list-style: none; padding: 0; }
-  #clips li { padding: .3rem 0; }
+  #meta { color: #999; font-size: .85rem; margin-top: .4rem; }
 </style>
 </head>
 <body>
 <p><a href="/">&larr; all devices</a></p>
 <h1>{{.ID}} <span id="status" class="{{if .Online}}online{{else}}offline{{end}}">{{if .Online}}online{{else}}offline{{end}}</span></h1>
-<video id="player" controls muted autoplay playsinline
-       data-id="{{.ID}}" data-src="{{.StreamURL}}"></video>
+<canvas id="screen" data-id="{{.ID}}"></canvas>
+<div id="meta"></div>
 <div id="error"></div>
-<h2>Recorded clips</h2>
-<div id="clips">loading&hellip;</div>
-<script src="/static/hls.light.min.js"></script>
 <script>
-// Note: no template values appear inside this script. The device ID and
-// stream URL travel through data-* attributes on the video element, which
-// html/template escapes as attribute values.
+// Note: no template values appear inside this script. The device ID travels
+// through the canvas data-id attribute, which html/template escapes.
+//
+// Wire format of a frame (device -> browser over the DataChannel):
+//   [1B flag][4B big-endian length][payload]
+// flag bit0 = Start (new frame), bit1 = End (frame complete). A frame is
+// streamed as 1..n chunks of at most 10000 bytes payload each.
 (function () {
   'use strict';
-  var video = document.getElementById('player');
-  var id = video.dataset.id;
-  var src = video.dataset.src;
+  var FLAG_START = 1, FLAG_END = 2;
+
+  var canvas = document.getElementById('screen');
+  var ctx2d = canvas.getContext('2d');
+  var deviceID = canvas.dataset.id;
+  var statusEl = document.getElementById('status');
+  var metaEl = document.getElementById('meta');
   var errorEl = document.getElementById('error');
 
-  if (window.Hls && Hls.isSupported()) {
-    var hls = new Hls({ liveSyncDurationCount: 2 });
-    hls.loadSource(src);
-    hls.attachMedia(video);
-    hls.on(Hls.Events.MANIFEST_PARSED, function () {
-      video.play().catch(function () {});
-    });
-    // Before the first frame arrives index.m3u8 does not exist yet (404),
-    // so retry fatal errors instead of giving up; the same recovery covers
-    // the device reconnecting or ffmpeg restarting.
-    hls.on(Hls.Events.ERROR, function (evt, data) {
-      if (!data || !data.fatal) return;
-      if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
-      else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
-      else errorEl.textContent = 'Stream error: ' + (data.details || 'unknown');
-    });
-  } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-    video.src = src; // native HLS (Safari)
-  } else {
-    errorEl.textContent = 'HLS playback is not supported in this browser.';
+  var ws = null, pc = null, ch = null;
+  var session = 0;       // bumped per connect attempt; stale sockets are ignored
+  var reconnectTimer = null, statsTimer = null;
+
+  // ---- chunk reassembly ----
+  var frameChunks = [];  // Uint8Array payload pieces of the frame in flight
+  var frameBytes = 0;
+
+  function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = cls; }
+  function setMeta(text) { metaEl.textContent = text; }
+  function setError(text) { errorEl.textContent = text; }
+
+  function onChunk(u8) {
+    if (u8.length < 5) { setError('bad chunk: ' + u8.length + ' bytes'); return; }
+    var flag = u8[0];
+    var len = (u8[1] << 24) | (u8[2] << 16) | (u8[3] << 8) | u8[4];
+    if (len + 5 !== u8.length) { setError('chunk length mismatch'); return; }
+    if (flag & FLAG_START) { frameChunks = []; frameBytes = 0; }
+    if (frameBytes > 0 || (flag & FLAG_START)) {
+      frameChunks.push(u8.subarray(5));
+      frameBytes += len;
+      if (flag & FLAG_END) drawFrame();
+    }
+    // else: continuation without a start - lost a chunk, drop until the
+    // next Start flag resyncs the stream.
   }
 
-  function fmtSize(b) {
-    if (b < 1024) return b + ' B';
-    if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
-    return (b / 1048576).toFixed(1) + ' MB';
+  function drawFrame() {
+    var blob = new Blob(frameChunks, { type: 'image/jpeg' });
+    frameChunks = []; frameBytes = 0;
+    if (window.createImageBitmap) {
+      createImageBitmap(blob).then(function (bmp) {
+        if (canvas.width !== bmp.width) canvas.width = bmp.width;
+        if (canvas.height !== bmp.height) canvas.height = bmp.height;
+        ctx2d.drawImage(bmp, 0, 0);
+        bmp.close();
+      }).catch(function () { /* corrupt frame; the next one overwrites */ });
+    } else {
+      var url = URL.createObjectURL(blob);
+      var img = new Image();
+      img.onload = function () {
+        if (canvas.width !== img.width) canvas.width = img.width;
+        if (canvas.height !== img.height) canvas.height = img.height;
+        ctx2d.drawImage(img, 0, 0);
+        URL.revokeObjectURL(url);
+      };
+      img.src = url;
+    }
   }
 
-  fetch('/archive/' + encodeURIComponent(id))
-    .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-    .then(function (files) {
-      var el = document.getElementById('clips');
-      if (!files.length) { el.textContent = 'No recordings yet.'; return; }
-      var ul = document.createElement('ul');
-      files.forEach(function (f) {
-        var li = document.createElement('li');
-        var a = document.createElement('a');
-        a.href = '/archive/' + encodeURIComponent(id) + '/' + encodeURIComponent(f.name);
-        a.textContent = f.name + ' (' + fmtSize(f.size) + ')';
-        li.appendChild(a);
-        ul.appendChild(li);
+  // ---- signaling ----
+  function wsURL() {
+    var proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+    return proto + location.host + '/view-signaling/' + encodeURIComponent(deviceID);
+  }
+
+  function handleSignal(msg) {
+    switch (msg.type) {
+    case 'ice_servers':
+      // Sent once per session, before anything else. TURN creds are
+      // minted per session and expire after TURN_CRED_HOURS.
+      if (pc) return;
+      createPC(msg.stun || [], msg.turn);
+      makeOffer();
+      break;
+    case 'answer':
+      if (!pc) return;
+      pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp }).catch(showErr);
+      break;
+    case 'ice':
+      // Device candidates are raw candidate lines. The session SDP has a
+      // single m-section (data channel), so mline 0 is unambiguous.
+      if (!pc || !msg.candidate) return;
+      pc.addIceCandidate({ candidate: msg.candidate, sdpMid: '0', sdpMLineIndex: 0 })
+        .catch(showErr);
+      break;
+    case 'peer_gone':
+      setStatus('offline', 'offline');
+      setError(msg.reason || 'The device went away.');
+      break;
+    case 'error':
+      setError(msg.reason || 'signaling error');
+      break;
+    default:
+      break; // unknown types ignored; protocol grows forward
+    }
+  }
+
+  function createPC(stunURLs, turn) {
+    var iceServers = stunURLs.map(function (u) { return { urls: u }; });
+    if (turn) {
+      iceServers.push({
+        urls: turn.urls,
+        username: turn.username,
+        credential: turn.credential,
       });
-      el.innerHTML = '';
-      el.appendChild(ul);
-    })
-    .catch(function (e) { document.getElementById('clips').textContent = 'Failed to load clips: ' + e.message; });
+    }
+    pc = new RTCPeerConnection({ iceServers: iceServers });
+    pc.onicecandidate = function (ev) {
+      if (ev.candidate) send({ type: 'ice', candidate: ev.candidate.candidate });
+    };
+    pc.onconnectionstatechange = function () {
+      if (!pc) return;
+      switch (pc.connectionState) {
+      case 'connected': setStatus('online', 'online'); pollPath(); break;
+      case 'failed':
+        setStatus('offline', 'offline');
+        setError('connection failed');
+        restartSession(); // retry with a fresh offer, not the dead pair
+        break;
+      case 'disconnected': setStatus('connecting…', 'offline'); break;
+      }
+    };
+    pc.ondatachannel = function (ev) {
+      // The device creates the channel ("video_data", unordered, at most
+      // one retransmit); the browser only accepts it.
+      ch = ev.channel;
+      ch.binaryType = 'arraybuffer';
+      ch.onmessage = function (e) { onChunk(new Uint8Array(e.data)); };
+      ch.onopen = function () { setStatus('online', 'online'); };
+      ch.onclose = function () { ch = null; };
+    };
+  }
+
+  function makeOffer() {
+    pc.createOffer()
+      .then(function (offer) { return pc.setLocalDescription(offer); })
+      .then(function () {
+        send({ type: 'offer', sdp: pc.localDescription.sdp });
+      })
+      .catch(showErr);
+  }
+
+  function send(msg) {
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+  }
+
+  function showErr(e) {
+    setError(e && e.message ? e.message : String(e));
+  }
+
+  function teardownPC() {
+    if (pc) { try { pc.close(); } catch (e) {} pc = null; }
+    ch = null;
+    frameChunks = []; frameBytes = 0;
+    if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+  }
+
+  function restartSession() {
+    teardownPC();
+    if (ws) { try { ws.close(); } catch (e) {} ws = null; }
+    scheduleReconnect();
+  }
+
+  function scheduleReconnect() {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, 3000);
+  }
+
+  function connect() {
+    clearTimeout(reconnectTimer);
+    teardownPC();
+    if (ws) { try { ws.close(); } catch (e) {} }
+    var my = ++session;
+    setError('');
+    setStatus('connecting…', 'offline');
+    ws = new WebSocket(wsURL());
+    ws.onmessage = function (ev) {
+      if (my === session) handleSignal(JSON.parse(ev.data));
+    };
+    ws.onclose = function () {
+      if (my !== session) return;
+      ws = null;
+      teardownPC();
+      setStatus('offline', 'offline');
+      scheduleReconnect();
+    };
+  }
+
+  // ---- relay detection: poll getStats for the nominated pair ----
+  function pollPath() {
+    if (statsTimer) return;
+    statsTimer = setInterval(function () {
+      if (!pc || pc.connectionState !== 'connected') {
+        clearInterval(statsTimer); statsTimer = null; return;
+      }
+      pc.getStats().then(function (report) {
+        report.forEach(function (stat) {
+          if (stat.type !== 'candidate-pair' || !stat.selected) return;
+          var rc = report.get(stat.remoteCandidateId);
+          if (!rc) return;
+          setMeta(rc.candidateType === 'relay'
+            ? 'via relay (TURN)'
+            : 'direct connection');
+        });
+      }).catch(function () {});
+    }, 3000);
+  }
+
+  // The server expires viewer sockets idle for 60 s; a live view sends no
+  // signaling traffic once ICE is up, so ping to keep the slot alive.
+  setInterval(function () { send({ type: 'ping' }); }, 20000);
+
+  connect();
 })();
 </script>
 </body>

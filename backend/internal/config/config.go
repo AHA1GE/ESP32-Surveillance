@@ -7,29 +7,35 @@ import (
 )
 
 type Config struct {
-	ListenAddr              string
-	UIListenAddr            string
-	StorageRoot             string
-	FFmpegPath              string
-	HLSSegmentSeconds       int
-	HLSLiveWindowSegments   int
-	ArchiveSegmentSeconds   int
-	ArchiveRetentionDays    int
-	RetentionCheckInterval  time.Duration
+	ListenAddr     string
+	UIListenAddr   string
+	TURNListenAddr string
+	TURNPublicAddr string // announced to peers; IP:port. Empty disables TURN.
+	TURNSecret     string // empty disables TURN
+	TURNCredHours  int
 }
 
 func Load() *Config {
 	return &Config{
-		ListenAddr:            getEnv("LISTEN_ADDR", ":8080"),
-		UIListenAddr:          getEnv("UI_LISTEN_ADDR", ""),
-		StorageRoot:           getEnv("STORAGE_ROOT", "./storage"),
-		FFmpegPath:            getEnv("FFMPEG_PATH", "ffmpeg"),
-		HLSSegmentSeconds:     getEnvInt("HLS_SEGMENT_SECONDS", 4),
-		HLSLiveWindowSegments: getEnvInt("HLS_LIVE_WINDOW_SEGMENTS", 10),
-		ArchiveSegmentSeconds: getEnvInt("ARCHIVE_SEGMENT_SECONDS", 300),
-		ArchiveRetentionDays:  getEnvInt("ARCHIVE_RETENTION_DAYS", 7),
-		RetentionCheckInterval: time.Duration(getEnvInt("RETENTION_CHECK_MINUTES", 5)) * time.Minute,
+		ListenAddr:     getEnv("LISTEN_ADDR", ":8080"),
+		UIListenAddr:   getEnv("UI_LISTEN_ADDR", ""),
+		TURNListenAddr: getEnv("TURN_LISTEN_ADDR", ":3478"),
+		TURNPublicAddr: getEnv("TURN_PUBLIC_ADDR", ""),
+		TURNSecret:     getEnv("TURN_SECRET", ""),
+		TURNCredHours:  getEnvInt("TURN_CRED_HOURS", 2),
 	}
+}
+
+// TURNEnabled reports whether both TURN settings are present. A secret
+// without a public address (or vice versa) is a misconfiguration, but the
+// server still starts: peers just get no ICE servers and fall back to
+// direct host candidates on the LAN.
+func (c *Config) TURNEnabled() bool {
+	return c.TURNSecret != "" && c.TURNPublicAddr != ""
+}
+
+func (c *Config) TURNCredTTL() time.Duration {
+	return time.Duration(c.TURNCredHours) * time.Hour
 }
 
 func getEnv(key, defaultVal string) string {

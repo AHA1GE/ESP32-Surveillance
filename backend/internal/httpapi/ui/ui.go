@@ -1,6 +1,7 @@
-// Package ui serves the built-in web UI: a device list page, a per-device
-// live view page, and the vendored hls.js bundle, all embedded in the binary
-// so the UI works with no internet access.
+// Package ui serves the built-in web UI: a device list page and a
+// per-device live view page, embedded in the binary so the UI works with
+// no internet access. Video never touches this server - view.html opens a
+// WebRTC DataChannel straight to the camera and draws JPEG frames itself.
 package ui
 
 import (
@@ -12,17 +13,11 @@ import (
 	"sort"
 	"time"
 
-	"github.com/AHA1GE/ESP32-Surveillance/backend/internal/pipeline"
 	"github.com/AHA1GE/ESP32-Surveillance/backend/internal/registry"
 )
 
-//go:embed assets templates
+//go:embed templates
 var staticFS embed.FS
-
-// onlineThreshold is how recently a frame must have arrived for a device to
-// count as online. Cameras push frames continuously while connected, so
-// 15 s means a device only drops offline after a sustained outage.
-const onlineThreshold = 15 * time.Second
 
 type Handler struct {
 	reg         *registry.Registry
@@ -42,7 +37,7 @@ func New(reg *registry.Registry) *Handler {
 type deviceInfo struct {
 	ID       string `json:"id"`
 	Online   bool   `json:"online"`
-	LastSeen string `json:"lastSeen"` // RFC3339 UTC; "" if never streamed
+	LastSeen string `json:"lastSeen"` // RFC3339 UTC; "" if never connected
 }
 
 type devicesPage struct {
@@ -50,9 +45,8 @@ type devicesPage struct {
 }
 
 type viewPage struct {
-	ID        string
-	Online    bool
-	StreamURL string
+	ID     string
+	Online bool
 }
 
 // DeviceList renders the device list page for "GET /{$}".
@@ -70,12 +64,10 @@ func (h *Handler) DeviceView(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "device not found", http.StatusNotFound)
 		return
 	}
-	info := makeDeviceInfo(dev)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := h.tmplView.Execute(w, viewPage{
-		ID:        dev.ID,
-		Online:    info.Online,
-		StreamURL: "/live/" + dev.ID + "/index.m3u8",
+		ID:     dev.ID,
+		Online: dev.Online(),
 	}); err != nil {
 		log.Printf("render view page: %v", err)
 	}
@@ -85,13 +77,6 @@ func (h *Handler) DeviceView(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) DevicesJSON(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(h.deviceInfos())
-}
-
-// StaticHLS serves the vendored hls.js bundle at "GET /static/hls.light.min.js".
-func (h *Handler) StaticHLS(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-	w.Header().Set("Cache-Control", "public, max-age=86400")
-	http.ServeFileFS(w, r, staticFS, "assets/hls.light.min.js")
 }
 
 func (h *Handler) deviceInfos() []deviceInfo {
@@ -105,12 +90,10 @@ func (h *Handler) deviceInfos() []deviceInfo {
 	return infos
 }
 
-func makeDeviceInfo(dev *pipeline.Device) deviceInfo {
-	lastFrame := dev.LastFrame()
-	online := !lastFrame.IsZero() && time.Since(lastFrame) < onlineThreshold
+func makeDeviceInfo(dev *registry.Device) deviceInfo {
 	lastSeen := ""
-	if !lastFrame.IsZero() {
-		lastSeen = lastFrame.UTC().Format(time.RFC3339)
+	if t := dev.LastSeen(); !t.IsZero() {
+		lastSeen = t.UTC().Format(time.RFC3339)
 	}
-	return deviceInfo{ID: dev.ID, Online: online, LastSeen: lastSeen}
+	return deviceInfo{ID: dev.ID, Online: dev.Online(), LastSeen: lastSeen}
 }

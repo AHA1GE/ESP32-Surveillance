@@ -1,6 +1,7 @@
 sdkconfig
 sdkconfig.old
 build/
+build.log
 managed_components/
 dependencies.lock
 .DS_Store

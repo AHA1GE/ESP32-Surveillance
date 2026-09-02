@@ -210,6 +210,17 @@ unused mbedTLS ciphersuites, and dropping the inert OTA path
 ([esp32-firmware/main/ota.c](esp32-firmware/main/ota.c) plus the cert bundle,
 `esp_https_ota` and cJSON) which has never actually run.
 
+**Measured (2026-09-02, IDF v5.4, esp_peer 1.5.4):** the spike measured
+esp_peer's real flash cost — `libpeer_default.a` ≈ 50KB, the esp_peer wrapper
+≈ 21KB, `esp_libsrtp` ≈ 27KB (≈ 100KB total) — and the full firmware links at
+~1.2MB. Comfortably under ~1900K, so both OTA slots were grown to `1920K` in
+[partitions.csv](esp32-firmware/partitions.csv). Two link-time findings from
+the spike, both handled in the committed tree: (1) esp_peer's prebuilt is
+built against IDF v6's `esp_log()` API — [main/esp_log_compat.c](esp32-firmware/main/esp_log_compat.c)
+provides a v5.x shim, force-extracted via `-u esp_log` in the top-level
+CMakeLists; (2) X.509 creation for the DTLS self-signed cert is unconditional in
+IDF v5.x (no Kconfig needed; esp_peer's README mentions the v6-era option).
+
 ### 3. Firmware — config and portal
 
 Add to `device_config_t` in

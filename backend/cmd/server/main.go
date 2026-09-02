@@ -10,48 +10,61 @@ import (
 	"time"
 
 	"github.com/AHA1GE/ESP32-Surveillance/backend/internal/config"
-	"github.com/AHA1GE/ESP32-Surveillance/backend/internal/httpapi"
 	"github.com/AHA1GE/ESP32-Surveillance/backend/internal/httpapi/ui"
-	"github.com/AHA1GE/ESP32-Surveillance/backend/internal/ingest"
-	"github.com/AHA1GE/ESP32-Surveillance/backend/internal/pipeline"
 	"github.com/AHA1GE/ESP32-Surveillance/backend/internal/registry"
-	"github.com/AHA1GE/ESP32-Surveillance/backend/internal/retention"
+	"github.com/AHA1GE/ESP32-Surveillance/backend/internal/signaling"
 )
 
 func main() {
 	cfg := config.Load()
 
-	if err := os.MkdirAll(cfg.StorageRoot, 0755); err != nil {
-		log.Fatalf("failed to create storage root: %v", err)
-	}
-
 	reg := registry.New()
-
-	pipelineCfg := &pipeline.DeviceConfig{
-		FFmpegPath:            cfg.FFmpegPath,
-		StorageRoot:           cfg.StorageRoot,
-		HLSSegmentSeconds:     cfg.HLSSegmentSeconds,
-		HLSLiveWindowSegments: cfg.HLSLiveWindowSegments,
-		ArchiveSegmentSeconds: cfg.ArchiveSegmentSeconds,
-	}
-
-	ingester := ingest.New(reg, pipelineCfg)
-	liveHandler := httpapi.NewLiveHandler(reg)
-	archiveHandler := httpapi.NewArchiveHandler(reg)
 	uiHandler := ui.New(reg)
 
-	cleaner := retention.New(reg, cfg.ArchiveRetentionDays, cfg.RetentionCheckInterval)
-	cleaner.Start()
+	// ICE server list announced to peers. The TURN server doubles as the
+	// STUN server (pion/turn answers STUN binding requests on the same UDP
+	// port), so no external STUN dependency exists.
+	var stunURLs, turnURLs []string
+	if cfg.TURNEnabled() {
+		stunURLs = []string{"stun:" + cfg.TURNPublicAddr}
+		turnURLs = []string{
+			"turn:" + cfg.TURNPublicAddr + "?transport=udp",
+			"turn:" + cfg.TURNPublicAddr + "?transport=tcp",
+		}
+	}
+
+	hub := signaling.New(reg, signaling.Options{
+		STUNURLs: stunURLs,
+		TURNURLs: turnURLs,
+		Secret:   cfg.TURNSecret,
+		CredTTL:  cfg.TURNCredTTL(),
+	})
+
+	if cfg.TURNEnabled() {
+		turnServer, err := signaling.StartTURN(signaling.TURNOptions{
+			ListenAddr: cfg.TURNListenAddr,
+			PublicAddr: cfg.TURNPublicAddr,
+			Secret:     cfg.TURNSecret,
+			Realm:      "esp32cam",
+		}, log.Default())
+		if err != nil {
+			log.Fatalf("TURN: %v", err)
+		}
+		defer func() {
+			if err := turnServer.Close(); err != nil {
+				log.Printf("TURN close: %v", err)
+			}
+		}()
+	} else {
+		log.Printf("TURN disabled (set TURN_SECRET and TURN_PUBLIC_ADDR to enable relay)")
+	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /live/{id}/{file}", liveHandler.ServeHTTP)
-	mux.HandleFunc("GET /archive/{id}", archiveHandler.ListHandler)
-	mux.HandleFunc("GET /archive/{id}/{file}", archiveHandler.ServeHTTP)
-	mux.HandleFunc("GET /ingest/{deviceID}", ingester.ServeHTTP)
+	mux.HandleFunc("GET /signaling/{deviceID}", hub.ServeDeviceWS)
+	mux.HandleFunc("GET /view-signaling/{deviceID}", hub.ServeViewerWS)
 	mux.HandleFunc("GET /{$}", uiHandler.DeviceList)
 	mux.HandleFunc("GET /view/{id}", uiHandler.DeviceView)
 	mux.HandleFunc("GET /api/devices", uiHandler.DevicesJSON)
-	mux.HandleFunc("GET /static/hls.light.min.js", uiHandler.StaticHLS)
 
 	server := &http.Server{
 		Addr:    cfg.ListenAddr,
@@ -59,8 +72,6 @@ func main() {
 	}
 
 	log.Printf("starting server on %s", cfg.ListenAddr)
-	log.Printf("storage root: %s", cfg.StorageRoot)
-	log.Printf("ffmpeg path: %s", cfg.FFmpegPath)
 
 	go func() {
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -90,10 +101,8 @@ func main() {
 
 	log.Println("shutting down...")
 
-	cleaner.Stop()
-
-	devices := reg.All()
-	for _, dev := range devices {
+	// Close every device and viewer socket; their read loops run cleanup.
+	for _, dev := range reg.All() {
 		dev.Close()
 	}
 

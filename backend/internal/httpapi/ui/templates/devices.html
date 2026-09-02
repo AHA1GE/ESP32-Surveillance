@@ -24,7 +24,7 @@
 {{range .Devices}}
   <li>
     <a href="/view/{{.ID}}"><span class="dot {{if .Online}}online{{else}}offline{{end}}"></span>{{.ID}}</a>
-    <div class="meta">{{if .Online}}online{{else if .LastSeen}}offline, last seen {{.LastSeen}}{{else}}never streamed{{end}}</div>
+    <div class="meta">{{if .Online}}online{{else if .LastSeen}}offline, last seen {{.LastSeen}}{{else}}never connected{{end}}</div>
   </li>
 {{end}}
 </ul>
@@ -46,7 +46,7 @@ function render(devs) {
     var meta = document.createElement('div');
     meta.className = 'meta';
     meta.textContent = d.online ? 'online'
-      : (d.lastSeen ? 'offline, last seen ' + d.lastSeen : 'never streamed');
+      : (d.lastSeen ? 'offline, last seen ' + d.lastSeen : 'never connected');
     a.appendChild(dot);
     a.appendChild(document.createTextNode(d.id));
     li.appendChild(a);
