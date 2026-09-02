@@ -266,9 +266,10 @@ this revision (manual flash, as today).
   active).
 - D1 `esp32-surveillance` (`c154a353-0375-44c1-a592-a26025fdc39e`) — bound to
   the worker as `esp32-surveillance-db` (verified via API).
-- Secrets: set by Harry (`SHARED_AUTH_TOKEN`, `TURN_SERVER_ID`,
-  `TURN_SERVER_TOKEN` — 2026-09-02). Cloudflare secrets are write-only, so
-  values can't be verified via API.
+- Secrets/vars: set by Harry and verified via API (the script bindings list
+  exposes names, and plain-text values — only `secret_text` values are
+  hidden): `SHARED_AUTH_TOKEN` (secret_text), `TURN_SERVER_ID` (plain_text,
+  value matches the TURN key uid), `TURN_SERVER_TOKEN` (secret_text).
 
 **Phase 1 — Cloudflare side:** wrangler skeleton; Worker routes + auth + static
 pages; `DeviceHub` with full protocol parity; D1 presence; TURN minting;
