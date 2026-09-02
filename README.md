@@ -1,7 +1,6 @@
 # ESP32 Surveillance Platform
 
-A real-time surveillance platform using one or more ESP32-CAM modules
-(OV2640) and a backend server that relays WebRTC connections from browser to
+A real-time surveillance platform using one or more ESP32-CAM modules and a backend server that relays WebRTC connections from browser to
 device. Live viewing only - no recording, no playback.
 
 ## Architecture
