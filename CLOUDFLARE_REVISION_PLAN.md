@@ -39,7 +39,7 @@ Locked decisions (from Harry, 2026-09-02):
 Browser (anywhere)                    ESP32-CAM
     │ HTTPS + WSS                          │ WSS (TLS, cert bundle already compiled in)
     ▼                                      ▼
-Cloudflare Worker  esp32.ahaigege.com (name TBD)
+Cloudflare Worker  espcam.dofor.fun  (worker "esp32-surveillance")
     ├─ GET  /                      device list page (static asset + 5s poll)
     ├─ GET  /view/{id}             viewer page (adapted view.html)
     ├─ POST /api/login             token → HttpOnly cookie
@@ -48,7 +48,7 @@ Cloudflare Worker  esp32.ahaigege.com (name TBD)
     └─ WS   /view-signaling/{id}   ──┘ DeviceHub (WebSocket hibernation)
            │                          │ mints CF TURN creds per session
            ▼                          ▼
-        D1 `esp32_surveillance`    Cloudflare TURN  turn.cloudflare.com (UDP/TCP/TLS)
+        D1 `esp32-surveillance`      Cloudflare TURN  turn.cloudflare.com (UDP/TCP/TLS)
         devices(id, online, ...)   Cloudflare STUN  stun.cloudflare.com:3478
 
 Media: device → browser WebRTC DataChannel "video_data" (unchanged wire format).
@@ -168,7 +168,11 @@ tracks last-activity per viewer and checks it on a 30 s alarm). Device IDs:
   stream; cost is $0.05/GB outbound after the shared 1 TB/mo free tier —
   effectively $0 for personal use, since LAN viewing never touches TURN.
 
-### 2.4 D1 `esp32_surveillance`
+### 2.4 D1 `esp32-surveillance`
+
+Created (`c154a353-0375-44c1-a592-a26025fdc39e`, verified via API). Currently
+unbound — `wrangler.jsonc` declares the D1 binding and the first
+`wrangler deploy` attaches it.
 
 `devices(id TEXT PRIMARY KEY, online INTEGER, first_seen TEXT, last_seen TEXT)`.
 `/api/devices` keeps the exact contract `[{id, online, lastSeen}]` sorted by id
@@ -196,9 +200,10 @@ tracks last-activity per viewer and checks it on a 30 s alarm). Device IDs:
 ### 3.2 Config (v3 — one forced re-dooring)
 
 - [config_store.h](esp32-firmware/main/config_store.h): `device_config_t` v3 —
-  keep `wifi_ssid`, `wifi_password`, `backend_host` (now the Worker hostname;
-  the existing `[A-Za-z0-9.-]` charset already fits); add `auth_token[64]`;
-  drop `backend_port` and the never-referenced `turn_server`.
+  keep `wifi_ssid`, `wifi_password`, `backend_host` (now the Worker hostname,
+  i.e. `espcam.dofor.fun`; the existing `[A-Za-z0-9.-]` charset already fits);
+  add `auth_token[64]`; drop `backend_port` and the never-referenced
+  `turn_server`.
 - Bump `CONFIG_STORE_VERSION` → 3. This invalidates stored configs so every
   device opens the portal once after flashing: re-enter SSID/password + new
   host + token. **Expected and accepted** (no config migration exists by
@@ -234,9 +239,9 @@ this revision (manual flash, as today).
   - `src/index.ts` (fetch handler, auth, routes), `src/devicehub.ts` (DO),
     `src/turn.ts` (cred minting + normalization), `assets/` (devices.html,
     view.html adapted).
-  - `wrangler.jsonc`: route `esp32.ahaigege.com/*` (TBD), DO binding
-    `DeviceHub` (hibernation), D1 binding, static assets, compatibility date ≥
-    DO hibernation.
+  - `wrangler.jsonc`: custom domain `espcam.dofor.fun` (already attached to the
+    worker), DO binding `DeviceHub` (hibernation), D1 binding, static assets,
+    compatibility date ≥ DO hibernation.
   - `schema.sql` for D1; `scripts/sim-device.mjs` — a Node WS client that
     impersonates a device (connect, receive offer, send canned answer/ice) to
     smoke-test the DO without hardware.
@@ -250,10 +255,18 @@ this revision (manual flash, as today).
 
 ## 5. Execution phases
 
-**Phase 0 — prerequisites (Harry, or me via Cloudflare MCP on approval):**
-~~create TURN key~~ (done — key "ESP32-Surveillance",
-`384eca229df5f03573623c75607f02f1`); create D1 database; add DNS record
-`esp32.ahaigege.com` (or chosen name) → Workers route; generate `AUTH_TOKEN`.
+**Phase 0 — prerequisites: DONE (2026-09-02, verified via Cloudflare API).**
+
+- TURN key "ESP32-Surveillance" (`384eca229df5f03573623c75607f02f1`).
+- Worker `esp32-surveillance` (dashboard-created).
+- Custom domain `espcam.dofor.fun` → that worker (zone dofor.fun, cert
+  active).
+- D1 `esp32-surveillance` (`c154a353-0375-44c1-a592-a26025fdc39e`) — unbound
+  until the first `wrangler deploy` attaches the binding from wrangler.jsonc.
+- Secrets: set by Harry. Cloudflare secrets are write-only, so names/values
+  can't be verified via API — the code will expect `AUTH_TOKEN`,
+  `TURN_KEY_ID`, `TURN_KEY_API_TOKEN`; rename/add in the dashboard if the
+  existing secret differs.
 
 **Phase 1 — Cloudflare side:** wrangler skeleton; Worker routes + auth + static
 pages; `DeviceHub` with full protocol parity; D1 presence; TURN minting;
