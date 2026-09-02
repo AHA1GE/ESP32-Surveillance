@@ -170,9 +170,11 @@ tracks last-activity per viewer and checks it on a 30 s alarm). Device IDs:
 
 ### 2.4 D1 `esp32-surveillance`
 
-Created (`c154a353-0375-44c1-a592-a26025fdc39e`, verified via API). Currently
-unbound — `wrangler.jsonc` declares the D1 binding and the first
-`wrangler deploy` attaches it.
+Created (`c154a353-0375-44c1-a592-a26025fdc39e`) and bound to the worker as
+**`esp32-surveillance-db`** (verified via API). `wrangler.jsonc` must declare
+the same binding name so deploys don't create a duplicate; code accesses it
+as `env["esp32-surveillance-db"]` (bracket notation — not a valid JS
+identifier with dashes).
 
 `devices(id TEXT PRIMARY KEY, online INTEGER, first_seen TEXT, last_seen TEXT)`.
 `/api/devices` keeps the exact contract `[{id, online, lastSeen}]` sorted by id
@@ -240,8 +242,9 @@ this revision (manual flash, as today).
     `src/turn.ts` (cred minting + normalization), `assets/` (devices.html,
     view.html adapted).
   - `wrangler.jsonc`: custom domain `espcam.dofor.fun` (already attached to the
-    worker), DO binding `DeviceHub` (hibernation), D1 binding, static assets,
-    compatibility date ≥ DO hibernation.
+    worker), DO binding `DeviceHub` (hibernation), D1 binding
+    `esp32-surveillance-db` (matches the dashboard binding name), static
+    assets, compatibility date ≥ DO hibernation.
   - `schema.sql` for D1; `scripts/sim-device.mjs` — a Node WS client that
     impersonates a device (connect, receive offer, send canned answer/ice) to
     smoke-test the DO without hardware.
@@ -261,8 +264,8 @@ this revision (manual flash, as today).
 - Worker `esp32-surveillance` (dashboard-created).
 - Custom domain `espcam.dofor.fun` → that worker (zone dofor.fun, cert
   active).
-- D1 `esp32-surveillance` (`c154a353-0375-44c1-a592-a26025fdc39e`) — unbound
-  until the first `wrangler deploy` attaches the binding from wrangler.jsonc.
+- D1 `esp32-surveillance` (`c154a353-0375-44c1-a592-a26025fdc39e`) — bound to
+  the worker as `esp32-surveillance-db` (verified via API).
 - Secrets: set by Harry. Cloudflare secrets are write-only, so names/values
   can't be verified via API — the code will expect `AUTH_TOKEN`,
   `TURN_KEY_ID`, `TURN_KEY_API_TOKEN`; rename/add in the dashboard if the
