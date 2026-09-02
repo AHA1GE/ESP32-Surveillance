@@ -40,18 +40,30 @@ stun-only ICE servers (still enough to exercise the protocol locally).
 
 ## Deploying
 
+Deployment is automatic: the worker is connected to this repo via the
+Cloudflare dashboard's **Workers Builds** Git integration, so every push to
+`main` builds `cloudflare/` and deploys to `espcam.dofor.fun` (verified
+2026-09-02). The build config in the dashboard points at the `cloudflare/`
+root directory.
+
 ```bash
-npx wrangler deploy
+npx wrangler deploy   # manual deploy still works; bindings come from wrangler.jsonc
 ```
 
-Notes for the first deploy (existing worker was created in the dashboard):
+Deploy notes (all already settled on the first deploy):
 
-- `wrangler deploy` replaces the worker's bindings with `wrangler.jsonc`.
-  The old D1 binding `esp32-surveillance-db` becomes `esp32_surveillance_db`
-  (same `database_id`, data untouched) - answer yes if asked to remove the
-  old binding.
-- If asked about secret bindings not in the config (`SHARED_AUTH_TOKEN`,
-  `TURN_SERVER_TOKEN`), answer **no** - they stay on the worker.
+- The D1 binding is `esp32_surveillance_db` (same `database_id` as the old
+  dashboard `esp32-surveillance-db`, data untouched).
+- Secrets `SHARED_AUTH_TOKEN` and `TURN_SERVER_TOKEN` are stored on the
+  worker (dashboard secrets) and survive deploys; `TURN_SERVER_ID` is a
+  plain-text var in the dashboard bindings. Keep them out of
+  `wrangler.jsonc`.
+
+## Live smoke test
+
+```bash
+node scripts/smoke-test.mjs --base https://espcam.dofor.fun --token <token>
+```
 
 ## Schema
 

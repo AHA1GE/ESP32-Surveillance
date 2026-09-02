@@ -304,9 +304,18 @@ flow, D1 online presence, ice_servers → offer → answer → ice relay, busy
 1008, offline error, peer_gone + close 1000 on disconnect, supersede close
 1000 + viewer eviction on reconnect). Known quirk: server closes from
 waitUntil/alarm contexts arrive ~10 s late (§2.2, §7) — terminal JSON
-messages are unaffected. Remaining sub-tasks: Harry deploys to the preview
-worker and does a browser test against the real `view.html` with a real
-firmware device (Phase 2 work).
+messages are unaffected.
+
+**Deployed 2026-09-02 via Workers Builds (dashboard Git integration):** every
+push to `main` builds `cloudflare/` and deploys the worker automatically
+(latest deployment 11:11Z, source wrangler). Verified via API + live checks:
+`DEVICE_HUB` DO namespace created, D1 binding renamed to
+`esp32_surveillance_db` (same database_id, data preserved), `ASSETS` bound,
+compat date 2026-09-02, all three secrets preserved; live auth gates on
+espcam.dofor.fun all correct (401 login page, 401 JSON, 401 WS). Remaining:
+full live smoke with the real token
+(`node cloudflare/scripts/smoke-test.mjs --base https://espcam.dofor.fun
+--token <token>`) and a browser test with a real firmware device (Phase 2).
 
 **Phase 2 — Firmware:** §3 changes; CI build; flash one camera; one-time portal
 reconfiguration; verify: cloud live view, LAN-direct pair, forced relay (block
