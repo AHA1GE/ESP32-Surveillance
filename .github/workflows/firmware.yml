@@ -21,10 +21,13 @@ jobs:
       - name: Build firmware
         uses: espressif/esp-idf-ci-action@v1
         with:
-          # vX.Y tags on the espressif/idf Docker image are frozen at the
-          # initial release (v6.0 == v6.0.0), not the latest patch - pin the
-          # exact patch level instead (espressif/esp-idf#15411).
-          esp_idf_version: v6.0.2
+          # Track the release/v6.0 branch: for a personal project the
+          # auto-follow of bugfix + security patches (mbedTLS/DTLS matter
+          # here) beats an exact patch pin that needs manual bumps and
+          # rots. Any built image still records its exact IDF version
+          # (esptool.py image_info). If a branch update ever breaks the
+          # build, pin the last-known-good patch tag temporarily.
+          esp_idf_version: release-v6.0
           target: esp32
           path: esp32-firmware
           # idf.py merge-bin packs bootloader + partition table + otadata +

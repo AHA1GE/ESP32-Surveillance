@@ -158,10 +158,10 @@ reference implementation rather than designing the wire format from scratch:
 - **Portal form limits.** `MAX_FORM_BODY` is 1024 and hard-rejects longer POSTs;
   `parse_form` already uses ~2.1KB of the httpd task's 4096-byte stack.
 - **Project pinned to ESP-IDF v6** (`idf: ">=6.0"` in the manifest + a CMake
-  guard; CI builds v6.0.2 — pinned at the patch level because Docker's `v6.0`
-  tag is frozen at the initial release, see `espressif/esp-idf#15411`,
-  target `esp32`) — esp_peer 1.5.4's prebuilt library is built against v6's
-  log API. No `sdkconfig` is committed, so every new setting must go in
+  guard; CI follows the `release-v6.0` branch so bugfix/security patches in
+  the v6.0 line land automatically — an exact patch tag rots without manual
+  bumps, target `esp32`) — esp_peer 1.5.4's prebuilt library is built against
+  v6's log API. No `sdkconfig` is committed, so every new setting must go in
   `sdkconfig.defaults`. Every new `#include <>` needs its component in
   `PRIV_REQUIRES` — this exact omission broke CI before (`3acd4ac`).
 
@@ -402,7 +402,7 @@ new or still open.
 2. **Spike**: `idf.py size-components` on the stub (esp_peer + camera driver
    only) gives the real esp_peer flash cost. This gates the partition decision.
 3. **Build/CI**: push the branch; the `Firmware` workflow must build clean on
-   ESP-IDF v6.0.2 / target `esp32`, and the image must fit the chosen slot.
+   the ESP-IDF v6.0 line / target `esp32`, and the image must fit the chosen slot.
 4. **Data-channel-only SDP smoke test** — the riskiest unproven assumption, and
    cheap to check. Confirm a media-less offer/answer (only an `m=application`
    line) negotiates against a real browser before building anything on top.
