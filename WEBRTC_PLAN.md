@@ -1,8 +1,9 @@
-# WebRTC DataChannel rearchitecture
+# WebRTC DataChannel rearchitecture — real-time only
 
 Design record for moving live viewing from the ffmpeg/HLS backend pipeline to
-a direct device-to-browser WebRTC DataChannel, plus optional SD recording on
-the device. Not yet implemented — this is the plan to work from.
+a direct device-to-browser WebRTC DataChannel. **The system becomes real-time
+only: no recording, no playback, no SD card, no archive.** Not yet
+implemented — this is the plan to work from.
 
 ## Context
 
@@ -24,28 +25,58 @@ doing only capture + send (the OV2640 already emits JPEG from its own ISP —
 there has never been a software encode on-device). Frames travel to the
 browser over a WebRTC SCTP DataChannel as chunked JPEG blobs, and the browser
 paints them to a `<canvas>`. No H.264, no HLS, no MSE, no ffmpeg. The backend
-shrinks to signaling + STUN/TURN + a static page, holding no durable state. A
-new SD card path gives the device local recording independent of the network.
+shrinks to signaling + STUN/TURN + a static page, holding no durable state.
+
+**Recording is dropped everywhere, not just on the device.** No SD card, no
+FATFS/SDMMC code, no archive MP4s on the backend, no playback endpoints, no
+`auto_record` checkbox. A frame that isn't watched live is gone forever. If
+viewing isn't live, it doesn't exist.
+
+### Why no SD
+
+The previous revision of this plan carried SD recording with an agreed escape
+hatch ("if it proves unworkable, drop it"). This revision pulls the hatch up
+front. Each argument below was already in the original plan as a *risk*;
+taken together they outweigh the feature:
+
+- **Brownout margin.** The board already trips on PC USB power — camera +
+  WiFi TX peaks alone. SD writes spike current on exactly the moments the
+  camera and radio are busy.
+- **PSRAM bus.** SDMMC DMA and camera DMA share the PSRAM bus. The project's
+  two worst bugs (`201204f`, `faccab9`) were both bus-contention failures,
+  and DTLS + SCTP are about to join that bus. SD would be a third tenant.
+- **Flash budget.** FATFS + sdmmc + vfs costs flash that the esp_peer stack
+  may need (step 2 decides).
+- **FAT is hostile to frame-rate writes** — metadata, not bandwidth, is the
+  bottleneck. One file per frame was ruled out on directory-scan cost;
+  AVI segments were the workaround, and segments are still fsync stalls and
+  directory churn inside the capture loop.
+- **No retained value.** Recordings were write-only (pull the card) and
+  nobody watches them; the backend archive side was slated for deletion
+  anyway.
+
+The real-time-only system has exactly one hard problem (WebRTC on a classic
+ESP32) instead of two.
 
 ### Decisions taken
 
 | Question | Decision |
 |---|---|
+| Recording / playback | **None, anywhere** — real-time only |
+| SD card | Dropped from scope entirely (no SDMMC, no FATFS) |
 | Concurrent viewers per device | Exactly 1 |
 | NAT traversal | STUN first, TURN relay only when direct fails |
-| SD recordings retrievable? | No — write-only, pull the card |
-| If SD proves unworkable on ESP32 | Drop the feature; revisit on S3/S31 |
 | Existing ffmpeg/HLS/archive pipeline | Delete entirely |
-| SD layout | **AVI segment files** (~60s each), not per-frame JPEGs |
-| Record trigger | Continuous while `auto_record` is on |
 | Flash budget | Grow OTA slots; fall back to **single OTA slot** if it won't fit |
 | TURN deployment | Embed `pion/turn/v4` in the Go backend binary |
 
 ## Hardware status as of 2026-09-02
 
-`ROADMAP.md` is stale — it still lists everything under "Needs hardware to
-verify" as unchecked, but real hardware testing has happened. Step 1 below
-fixes the roadmap. Actually confirmed:
+`ROADMAP.md` is half-updated: the confirmed items below are ticked, but the
+~60s STA-timeout fallback is bundled inside the ticked portal item when it is
+in fact unverified, and the Implemented section still describes the
+HLS/archive system this plan deletes. Step 1 fixes the statuses; step 7
+rewrites the Implemented section. Actually confirmed:
 
 - Camera init succeeds with PSRAM on a real AI-Thinker ESP32-CAM, and frames
   reach the backend (evidenced by the EV-EOF-OVF / NO-SOI debugging behind
@@ -65,16 +96,18 @@ tested on hardware at all.
 
 The USB-vs-standalone split is the classic ESP32-CAM brownout signature: a PC
 USB port often can't supply the current peaks of camera + WiFi TX. Research
-independently flagged this as the usual root cause of "SD corruption" reports
-on this board. **Treat a known-good 5V supply with bulk capacitance (470–1000µF)
-as a prerequisite, not a debugging step** — SD writes only add to the current
-draw, and chasing this in software would waste a lot of time.
+flagged this as the usual root cause of a long list of "mysterious" failures
+on this board — SD corruption reports among them, which is one more reason SD
+is out of this plan. **Treat a known-good 5V supply with bulk capacitance
+(470–1000µF) as a prerequisite, not a debugging step.**
 
-## Key research findings
+## Key research finding
 
-Two findings changed the shape of this plan and are worth stating up front.
+The one finding that changed the shape of this plan is worth stating up
+front. (The previous revision's FAT-layout research — one-JPEG-per-file vs
+AVI segments — is moot with SD gone.)
 
-**1. Espressif has already built almost exactly this.**
+**Espressif has already built almost exactly this.**
 `solutions/local_jpeg_stream` in
 [esp-webrtc-solution](https://github.com/espressif/esp-webrtc-solution)
 streams camera JPEGs over a WebRTC DataChannel to a browser. Use it as the
@@ -90,14 +123,6 @@ reference implementation rather than designing the wire format from scratch:
   `max_retransmit_count = 1`, label `"video_data"`. Partial reliability is
   right for live video — a late frame is worthless.
 - Their `webrtc_test.html` shows the browser-side reassembly.
-
-**2. One-JPEG-per-file on FAT will not survive 10fps.** The bottleneck is
-metadata, not bandwidth (400KB/s of payload is fine on a 1-bit bus). File
-creation scans the whole directory, so cost grows as it fills; a long
-filename consumes ~4 directory entries, capping a FAT32 directory near
-~16,000 files; and there are field reports of corruption around 18.5k files
-and a hang at 21,844. Hence AVI segments: one file open per minute instead of
-600.
 
 ## Constraints discovered
 
@@ -119,11 +144,11 @@ and a hang at 21,844. Hence AVI segments: one file open per minute instead of
 - **PSRAM bus saturation is a documented, already-hit failure mode.**
   `camera.c` and `sdkconfig.defaults` both carry comments explaining that SVGA
   frames plus resident PSRAM WebSocket buffers caused EV-EOF-OVF camera
-  overflows that killed the stream every ~12s. Adding SD writes *and* DTLS on
-  the same bus is the largest regression risk here.
+  overflows that killed the stream every ~12s. Adding the esp_peer stacks
+  (DTLS + SCTP) on the same bus is the largest regression risk here.
 - **Brownout is already observable on this board** (works standalone, fails on
-  PC USB — see Hardware status). Camera + WiFi TX + SD write concurrently makes
-  it worse. Fix the supply before blaming code.
+  PC USB — see Hardware status). Camera + WiFi TX peaks alone trip it. Fix
+  the supply before blaming code.
 - **Config schema has no migration.** `config_store_load` does strict equality
   on both blob length and version, despite a comment claiming otherwise. New
   fields change `sizeof` and invalidate every stored config → device drops to
@@ -132,14 +157,6 @@ and a hang at 21,844. Hence AVI segments: one file open per minute instead of
   `[A-Za-z0-9.-]`. Signaling URLs and TURN credentials need their own validator.
 - **Portal form limits.** `MAX_FORM_BODY` is 1024 and hard-rejects longer POSTs;
   `parse_form` already uses ~2.1KB of the httpd task's 4096-byte stack.
-- **GPIO for SD is clean, and 1-bit mode is required (not just preferred).**
-  Camera uses 0,5,18,19,21,22,23,25,26,27,32,34,35,36,39; status LED is 33.
-  SDMMC slot 1 pins are **fixed by IO MUX on ESP32 and cannot be remapped**:
-  CLK=14, CMD=15, D0=2 — no conflict. Critically, **D2=GPIO12 is the flash-
-  voltage strapping pin**; IDF documents that it is incompatible with the DAT2
-  pull-up at 3.3V flash, and the official fixes are burning irreversible eFuses
-  or not using D2 at all. 1-bit mode also frees **D1=GPIO4, the flash LED**,
-  keeping `auto_flash` implementable.
 - **CI pins ESP-IDF v5.3, target `esp32`.** No `sdkconfig` is committed, so every
   new setting must go in `sdkconfig.defaults`. Every new `#include <>` needs its
   component in `PRIV_REQUIRES` — this exact omission broke CI before (`3acd4ac`).
@@ -154,13 +171,13 @@ itself untested, which step 1 of Verification addresses.
 
 ### 1. Update ROADMAP.md first (small, do it immediately)
 
-The "Needs hardware to verify" section lists everything as unchecked when
-several items were confirmed on 2026-09-02. Rewrite it to match the Hardware
-status section above: tick camera-init-with-PSRAM, the config portal flow, and
-the LED patterns; leave the STA-timeout fallback, two-device, and release/OTA
-items open; and record the two live findings — that the board is only stable
-standalone-powered, and that the browser view still freezes intermittently at
-`201204f` with `faccab9` untested.
+The "Needs hardware to verify" section has the three confirmed items ticked,
+but the ~60s STA-timeout fallback is bundled inside the ticked portal item
+and is in fact unverified — split it into its own unchecked item. Record the
+two live findings — that the board is only stable standalone-powered, and
+that the browser view still freezes intermittently at `201204f` with
+`faccab9` untested. Leave the Implemented-section rewrite (HLS/archive →
+real-time only) to the step 7 docs sweep.
 
 This matters beyond bookkeeping: the plan leans on "main is a known-good
 fallback," and the roadmap is where that claim is either true or not.
@@ -168,7 +185,8 @@ fallback," and the roadmap is where that claim is either true or not.
 ### 2. Flash measurement spike — before any implementation
 
 Roughly an hour of work that de-risks everything downstream. Build a stub app
-with `espressif/esp_peer` + the existing camera driver + FATFS/SDMMC, and run
+with `espressif/esp_peer` + the existing camera driver (no SD, no FATFS — that
+whole dependency chain is gone from this plan), and run
 `idf.py size-components` to get the **real** esp_peer contribution.
 
 Then pick the partition layout from the measured number:
@@ -192,76 +210,31 @@ unused mbedTLS ciphersuites, and dropping the inert OTA path
 ([esp32-firmware/main/ota.c](esp32-firmware/main/ota.c) plus the cert bundle,
 `esp_https_ota` and cJSON) which has never actually run.
 
-### 3. Firmware — SD recording (independent, land next)
-
-**Escape hatch, agreed up front:** if SD proves unworkable on this board —
-whether from FAT throughput, brownout under combined load, or flash budget —
-**delete the feature rather than fighting it**, and revisit on an ESP32-S3 or
-S31, which have the headroom to do it comfortably. SD is deliberately
-sequenced before the WebRTC work and kept in its own module so this remains a
-clean removal rather than an unpicking job.
-
-New `main/sd_store.c` / `sd_store.h`, added to `SRCS` in
-[esp32-firmware/main/CMakeLists.txt](esp32-firmware/main/CMakeLists.txt) with
-`fatfs`, `sdmmc`, `esp_driver_sdmmc`, `vfs` added to `PRIV_REQUIRES`.
-
-```c
-esp_err_t sd_store_init(void);                        /* mount; ESP_ERR_NOT_FOUND if no card */
-bool      sd_store_available(void);
-esp_err_t sd_store_write_frame(const uint8_t *buf, size_t len, uint64_t ts_us);
-```
-
-Mount with `esp_vfs_fat_sdmmc_mount()` — note this is **not** deprecated for
-SDMMC (only the zero-arg `esp_vfs_fat_sdmmc_unmount()` is; unmount via
-`esp_vfs_fat_sdcard_unmount(base_path, card)`). Set **both**
-`host.flags = SDMMC_HOST_FLAG_1BIT` **and** `slot.width = 1` — setting only
-`width` still routes D1/D2/D3 to the SDMMC peripheral and steals GPIO4/12/13.
-`format_if_mount_failed = false`; never silently reformat a user's card.
-`disk_status_check_enable = true` to detect a yanked card.
-
-**AVI segment writer.** One AVI per ~60s at `/sdcard/rec/YYYYMMDD/HHMMSS.avi`,
-JPEGs appended as MJPEG frames, index written on close. Files open directly in
-VLC with no extractor. Model on
-[s60sc/ESP32-CAM_MJPEG2SD](https://github.com/s60sc/ESP32-CAM_MJPEG2SD), which
-does exactly this on this board.
-
-- `fsync()` + `fclose()` at every segment boundary — a file left open across a
-  brownout is the single biggest real-world FAT corruption source. Leave
-  `CONFIG_FATFS_IMMEDIATE_FSYNC` **off**; per-write sync is far too expensive.
-- Keep two FATs (the default); `use_one_fat = true` trades reliability for space.
-- `allocation_unit_size` 32–64KB suits large segment files.
-- Pruning: every N segments call `esp_vfs_fat_info()`; if usage > 50%, delete
-  oldest day-folders until back under. Run this on a **separate low-priority
-  task**, never inline in the capture loop — a directory walk in the frame path
-  would stall capture exactly like the blocking send did in `faccab9`.
-- Mount failure is non-fatal: log, mark unavailable, keep streaming.
-
-Wire into `streaming_task` in
-[esp32-firmware/main/app_main.c](esp32-firmware/main/app_main.c): the JPEG is
-already copied to the PSRAM staging buffer and the framebuffer released before
-the send, so write to SD from that staging copy, gated on
-`cfg->auto_record && sd_store_available()`.
-
-### 4. Firmware — config and portal
+### 3. Firmware — config and portal
 
 Add to `device_config_t` in
 [esp32-firmware/main/config_store.h](esp32-firmware/main/config_store.h):
 signaling host/port, and TURN server URL. TURN *credentials* are deliberately
-**not** stored — they arrive per-session over signaling (see step 6). These
+**not** stored — they arrive per-session over signaling (see step 5). These
 exceed the 64-byte `reserved` block, so `sizeof` grows: bump
 `CONFIG_STORE_VERSION` to 2 and accept that existing configs drop to the portal.
 
+**Remove `auto_record`** — the field and the checkbox. With SD gone there is
+nothing left for it to gate, and "reserved, future use" is now "never". The
+version bump absorbs the struct change for free. `auto_flash` stays: it gates
+the LED flashlight, which is a camera function, not a recording function.
+
 - Write a new validator for URL-ish fields; **do not** reuse the `backend_host`
   charset rule, which rejects `:` and `/`.
-- [esp32-firmware/main/web_portal.c](esp32-firmware/main/web_portal.c): add
-  fields to `FORM_TEMPLATE` (args are positional — reorder the `snprintf` call
-  to match), add `else if (strcmp(key_dec, ...))` branches in `parse_form`, add
-  `*_esc[]` buffers in `send_form`, grow `page[4096]`, raise `MAX_FORM_BODY`
-  above 1024, and raise `config.stack_size` in `web_portal_start()` (or make
-  `val_dec` static) given `parse_form`'s existing ~2.1KB stack use.
-- Relabel the `auto_record` checkbox — it stops being "reserved, future use".
+- [esp32-firmware/main/web_portal.c](esp32-firmware/main/web_portal.c): add the
+  new fields to `FORM_TEMPLATE` and delete the `auto_record` checkbox in the
+  same pass (args are positional — reorder the `snprintf` call to match), add
+  `else if (strcmp(key_dec, ...))` branches in `parse_form`, add `*_esc[]`
+  buffers in `send_form`, grow `page[4096]`, raise `MAX_FORM_BODY` above 1024,
+  and raise `config.stack_size` in `web_portal_start()` (or make `val_dec`
+  static) given `parse_form`'s existing ~2.1KB stack use.
 
-### 5. Firmware — WebRTC DataChannel
+### 4. Firmware — WebRTC DataChannel
 
 New `main/webrtc_stream.c` / `.h` replacing
 [esp32-firmware/main/ws_stream.c](esp32-firmware/main/ws_stream.c) as the
@@ -303,13 +276,13 @@ added alongside). Add the DTLS options to `sdkconfig.defaults`.
 - Put `send_cache_size`/`recv_cache_size` in PSRAM; start ~128–200KB (Espressif
   uses 400KB, but on S3/P4). Lower `cache_timeout` to ~500–1000ms from the
   5000ms default so stale frames aren't sent after a stall.
-- Pin `esp_peer_main_loop()` to one core, camera + SD to the other.
+- Pin `esp_peer_main_loop()` to one core, camera to the other.
 - Keep the per-10s fps/heap telemetry in `streaming_task` — it's the main
   instrument for catching a PSRAM-contention regression.
 
 Delete `ws_stream.c` once this works.
 
-### 6. Backend — Go
+### 5. Backend — Go
 
 Delete `internal/pipeline`, `internal/retention`,
 [backend/internal/httpapi/archive.go](backend/internal/httpapi/archive.go),
@@ -317,6 +290,10 @@ Delete `internal/pipeline`, `internal/retention`,
 vendored hls.js asset. Drop `ffmpeg` from
 [backend/Dockerfile](backend/Dockerfile) and the ffmpeg/HLS/archive/retention
 env vars from [backend/internal/config/config.go](backend/internal/config/config.go).
+
+After this change the backend stores no frame data anywhere: no disk, no
+archive, no playback endpoints. A device's history is just its presence in the
+device list.
 
 - `internal/registry` shrinks to an in-memory table of online devices and their
   signaling sockets — no `pipeline.Device`, no disk paths. Keep `ValidDeviceID`
@@ -353,7 +330,7 @@ env vars from [backend/internal/config/config.go](backend/internal/config/config
 - Keep the device-list page and `/api/devices`; "online" now means "has a live
   signaling socket" rather than "sent a frame in the last 15s".
 
-### 7. Browser
+### 6. Browser
 
 Rewrite
 [backend/internal/httpapi/ui/templates/view.html](backend/internal/httpapi/ui/templates/view.html):
@@ -367,20 +344,29 @@ drop hls.js and `<video>`, use `<canvas>` plus `RTCPeerConnection`.
 - Surface connection state (connecting / direct / relayed via TURN / failed) —
   whether TURN was needed is exactly what you'll want to know when debugging a
   slow stream.
+- No recording or playback UI — the page is a live view and nothing else.
 - Keep the existing dark styling.
+
+### 7. Docs sweep
+
+Update [ROADMAP.md](ROADMAP.md), [README.md](README.md) and
+[backend/README.md](backend/README.md): the Implemented section and the system
+descriptions still say HLS/archive/retention/playback and the portal's
+auto-record option. Rewrite them to the real-time-only system. Small, but the
+docs are what the next reader will use to decide whether "record" is still a
+thing.
 
 ### Order of work
 
 ROADMAP fix (1) is a two-minute doc change; do it while the testing is fresh.
 The spike (2) comes before any implementation — it decides the partition layout
-and possibly whether this approach is viable on this hardware at all. SD
-recording (3) is fully independent of WebRTC and testable alone, so land it next
-rather than entangling the two hardest-to-debug changes (and it's the piece with
-an agreed escape hatch). Then config/portal (4), then the WebRTC transport (5)
-with backend (6) and browser (7) together, since none of those three is testable
-in isolation.
+and possibly whether this approach is viable on this hardware at all. Config
+and portal (3) is fully independent of WebRTC and testable alone, so land it
+next. Then the WebRTC transport (4) with backend (5) and browser (6) together,
+since none of those three is testable in isolation. The docs sweep (7) lands
+with or after (6).
 
-One thing to settle before starting (5): retest `faccab9` on hardware. It's the
+One thing to settle before starting (4): retest `faccab9` on hardware. It's the
 current HEAD, it's untested, and the plan treats `main` as a known-good
 fallback — worth knowing whether that's actually true before building on it.
 
@@ -392,35 +378,30 @@ new or still open.
 
 0. **Power supply first.** Run everything from a known-good standalone 5V
    supply with bulk capacitance, never PC USB serial — the board is already
-   known to misbehave on USB. Establish this before interpreting any other
-   result, or you'll misattribute brownouts to code.
+   known to misbehave on USB (camera + WiFi TX peaks alone). Establish this
+   before interpreting any other result, or you'll misattribute brownouts to
+   code.
 1. **Retest `faccab9` on `main`** to establish whether the fallback baseline
    actually works, and whether the intermittent browser freeze survives.
-2. **Spike**: `idf.py size-components` on the stub gives the real esp_peer
-   flash cost. This gates the partition decision.
+2. **Spike**: `idf.py size-components` on the stub (esp_peer + camera driver
+   only) gives the real esp_peer flash cost. This gates the partition decision.
 3. **Build/CI**: push the branch; the `Firmware` workflow must build clean on
    ESP-IDF v5.3 / target `esp32`, and the image must fit the chosen slot.
-4. **SD alone**, before any WebRTC work. Flash over USB (the partition change
-   makes a serial reflash mandatory anyway), then **unplug and run standalone**
-   for the actual test. Enable `auto_record`; confirm AVI segments land in dated
-   folders and **open in VLC**. Fill past 50% and confirm oldest folders are
-   pruned while the stream keeps running. Pull power mid-segment and confirm the
-   card remounts with only the in-flight segment lost.
-5. **Data-channel-only SDP smoke test** — the riskiest unproven assumption, and
+4. **Data-channel-only SDP smoke test** — the riskiest unproven assumption, and
    cheap to check. Confirm a media-less offer/answer (only an `m=application`
    line) negotiates against a real browser before building anything on top.
-6. **Signaling**: device appears online on the device list, drops off when
+5. **Signaling**: device appears online on the device list, drops off when
    unplugged.
-7. **Direct path**: viewer on the same LAN — canvas paints, and
+6. **Direct path**: viewer on the same LAN — canvas paints, and
    `RTCPeerConnection.getStats()` shows a `host`/`srflx` candidate pair
    (confirming STUN did its job and TURN wasn't needed).
-8. **TURN path**: viewer on a mobile network — stream works, stats show a
+7. **TURN path**: viewer on a mobile network — stream works, stats show a
    `relay` pair.
-9. **The regression that matters**: watch the per-10s
-   `capture=/sent=/failed=/dropped=/heap_free=` telemetry while recording to SD
-   *and* streaming over DTLS. If capture fps sags or `EV-EOF-OVF`/`NO-SOI`
-   appears, PSRAM bus contention is back (the failure mode of `201204f` and
-   `faccab9`).
-10. Run ~30 minutes continuously — historical failures showed at ~12s and on
-    watchdog boundaries, and the current browser freeze is intermittent, so a
-    short smoke test proves little.
+8. **The regression that matters**: watch the per-10s
+   `capture=/sent=/failed=/dropped=/heap_free=` telemetry while streaming over
+   DTLS. If capture fps sags or `EV-EOF-OVF`/`NO-SOI` appears, PSRAM bus
+   contention is back (the failure mode of `201204f` and `faccab9`). With SD
+   gone, a regression here is unambiguously the WebRTC stack.
+9. Run ~30 minutes continuously — historical failures showed at ~12s and on
+   watchdog boundaries, and the current browser freeze is intermittent, so a
+   short smoke test proves little.
