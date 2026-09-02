@@ -38,17 +38,25 @@ were implemented together as a single rearchitecture; hardware verification
       with PSRAM enabled (this is the setting the old Arduino firmware got
       wrong).
 - [x] Confirm the config portal flow on a real device: first flash -> AP +
-      form -> save -> reboot -> streaming, plus the ~60 s STA-timeout
-      fallback to the portal with wrong credentials.
+      form -> save -> reboot -> streaming.
+- [ ] Confirm the ~60 s STA-timeout fallback to the portal with wrong
+      credentials.
 - [x] Confirm the GPIO33 LED patterns (solid / double blink / fast flash)
       and that the portal form renders correctly on a phone browser.
 - [ ] Confirm sustained frame rate/quality over real WiFi into the live HLS
       view.
+- [ ] Retest `faccab9` (PSRAM staging + fast reconnect) on hardware and
+      confirm whether the intermittent browser freeze persists.
 - [ ] Run two physical devices with different device IDs simultaneously and
       confirm independent live/archive output.
 - [ ] Tag a release, confirm the GitHub Release gets the `.bin` attached,
       and manually exercise `ota_apply()` once before ever enabling
       `CONFIG_ENABLE_AUTO_OTA` unattended.
+
+Hardware findings from 2026-09-02 testing: the board streams only when
+standalone-powered (fails on PC USB — the classic brownout signature; use a
+known-good 5V supply with bulk capacitance), and the browser view freezes
+intermittently at `201204f`.
 
 ## Future
 
