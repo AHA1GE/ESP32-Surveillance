@@ -312,10 +312,13 @@ push to `main` builds `cloudflare/` and deploys the worker automatically
 `DEVICE_HUB` DO namespace created, D1 binding renamed to
 `esp32_surveillance_db` (same database_id, data preserved), `ASSETS` bound,
 compat date 2026-09-02, all three secrets preserved; live auth gates on
-espcam.dofor.fun all correct (401 login page, 401 JSON, 401 WS). Remaining:
-full live smoke with the real token
-(`node cloudflare/scripts/smoke-test.mjs --base https://espcam.dofor.fun
---token <token>`) and a browser test with a real firmware device (Phase 2).
+espcam.dofor.fun all correct (401 login page, 401 JSON, 401 WS).
+
+**Live smoke test passed 30/30 against espcam.dofor.fun (2026-09-02,
+real token, `turn=minted`)** — TURN credential minting works in production.
+Production D1 was empty before the run (no real device had connected to the
+new worker yet); the run left one offline `esp32cam-SMOKE-*` presence row.
+Remaining: a browser test with a real firmware device (Phase 2).
 
 **Phase 2 — Firmware:** §3 changes; CI build; flash one camera; one-time portal
 reconfiguration; verify: cloud live view, LAN-direct pair, forced relay (block
@@ -328,13 +331,14 @@ implemented.
 
 ## 6. Verification checklist
 
-1. ✅ `npx wrangler dev` + `scripts/smoke-test.mjs` (2026-09-02): viewer gets
-   `ice_servers`, offer reaches sim device with `stun`/`turn` attached,
-   answer/ice round-trip, second viewer gets `busy` + close 1008, offline
-   device gets `device offline`, never-seen ID gets 404, device disconnect →
+1. ✅ `scripts/smoke-test.mjs` (2026-09-02): 30/30 both against
+   `wrangler dev` and live against https://espcam.dofor.fun with the real
+   token — viewer gets `ice_servers` (`turn=minted` in production), offer
+   reaches sim device with `stun`/`turn` attached, answer/ice round-trip,
+   second viewer gets `busy` + close 1008, offline device gets
+   `device offline`, never-seen ID gets 404, device disconnect →
    `peer_gone` + close 1000, reconnect → supersede close 1000 + viewer
-   eviction. (Local runs are stun-only unless `TURN_SERVER_TOKEN` is set;
-   turn-minting itself is covered by a direct API call.)
+   eviction.
 2. Real device: LED solid on connect; `/api/devices` shows online; list page
    renders; kill viewer tab → device gets `viewer_gone` (log), PC torn down.
 3. Relay path: from a different network (or cell), confirm via the viewer's
