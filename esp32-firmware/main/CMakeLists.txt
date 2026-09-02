@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "app_main.c" "wifi.c" "camera.c" "webrtc_stream.c" "esp_log_compat.c" "ota.c"
+    SRCS "app_main.c" "wifi.c" "camera.c" "webrtc_stream.c" "ota.c"
          "config_store.c" "device_id.c" "led.c" "web_portal.c"
     INCLUDE_DIRS "."
     PRIV_REQUIRES esp32-camera esp_websocket_client esp_peer esp_http_client esp_https_ota

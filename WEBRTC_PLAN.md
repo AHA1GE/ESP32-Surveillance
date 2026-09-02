@@ -157,8 +157,10 @@ reference implementation rather than designing the wire format from scratch:
   `[A-Za-z0-9.-]`. Signaling URLs and TURN credentials need their own validator.
 - **Portal form limits.** `MAX_FORM_BODY` is 1024 and hard-rejects longer POSTs;
   `parse_form` already uses ~2.1KB of the httpd task's 4096-byte stack.
-- **CI pins ESP-IDF v5.3, target `esp32`.** No `sdkconfig` is committed, so every
-  new setting must go in `sdkconfig.defaults`. Every new `#include <>` needs its
+- **Project pinned to ESP-IDF v6** (`idf: ">=6.0"` in the manifest + a CMake
+  guard; CI builds v6.0, target `esp32`) — esp_peer 1.5.4's prebuilt library
+  is built against v6's log API. No `sdkconfig` is committed, so every new
+  setting must go in `sdkconfig.defaults`. Every new `#include <>` needs its
   component in `PRIV_REQUIRES` — this exact omission broke CI before (`3acd4ac`).
 
 ## Plan
@@ -215,11 +217,12 @@ esp_peer's real flash cost — `libpeer_default.a` ≈ 50KB, the esp_peer wrappe
 ≈ 21KB, `esp_libsrtp` ≈ 27KB (≈ 100KB total) — and the full firmware links at
 ~1.2MB. Comfortably under ~1900K, so both OTA slots were grown to `1920K` in
 [partitions.csv](esp32-firmware/partitions.csv). Two link-time findings from
-the spike, both handled in the committed tree: (1) esp_peer's prebuilt is
-built against IDF v6's `esp_log()` API — [main/esp_log_compat.c](esp32-firmware/main/esp_log_compat.c)
-provides a v5.x shim, force-extracted via `-u esp_log` in the top-level
-CMakeLists; (2) X.509 creation for the DTLS self-signed cert is unconditional in
-IDF v5.x (no Kconfig needed; esp_peer's README mentions the v6-era option).
+the spike: (1) esp_peer's prebuilt is built against IDF v6's `esp_log()` API —
+the project is therefore pinned to ESP-IDF v6 (`idf: ">=6.0"` + CMake guard),
+matching the library's build environment instead of shimming; (2) X.509
+creation for the DTLS self-signed cert is unconditional in IDF v5.x, but is a
+real Kconfig option from v6 on — `CONFIG_MBEDTLS_X509_CREATE_C=y` is set in
+`sdkconfig.defaults`.
 
 ### 3. Firmware — config and portal
 
@@ -397,7 +400,7 @@ new or still open.
 2. **Spike**: `idf.py size-components` on the stub (esp_peer + camera driver
    only) gives the real esp_peer flash cost. This gates the partition decision.
 3. **Build/CI**: push the branch; the `Firmware` workflow must build clean on
-   ESP-IDF v5.3 / target `esp32`, and the image must fit the chosen slot.
+   ESP-IDF v6.0 / target `esp32`, and the image must fit the chosen slot.
 4. **Data-channel-only SDP smoke test** — the riskiest unproven assumption, and
    cheap to check. Confirm a media-less offer/answer (only an `m=application`
    line) negotiates against a real browser before building anything on top.

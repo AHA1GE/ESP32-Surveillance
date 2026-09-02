@@ -39,7 +39,7 @@ point.
 
 1. Build via CI: push/open a PR and download the `firmware` artifact from
    the `Firmware` workflow run (or run `idf.py build` locally if you have
-   the ESP-IDF toolchain installed).
+   ESP-IDF v6 or later installed — the firmware refuses older IDFs).
 2. Flash once over USB: `esptool.py write_flash @flash_args` from the
    downloaded build, or `idf.py -p <PORT> flash` locally. The build also
    contains `merged-binary.bin`, one image flashable at 0x0:

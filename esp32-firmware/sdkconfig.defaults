@@ -22,11 +22,12 @@ CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 # TLS certificate bundle for HTTPS
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 
-# DTLS + SRTP extensions, required by esp_peer (esp_peer's README lists
-# them as hard prerequisites for the WebRTC stack; its third prerequisite,
-# X509_CREATE_C, is unconditional in IDF v5.x's esp_config.h).
+# DTLS + SRTP extensions + X.509 creation, required by esp_peer (its README
+# lists them as hard prerequisites for the WebRTC stack; X509_CREATE_C is a
+# real Kconfig option from IDF v6 onward).
 CONFIG_MBEDTLS_SSL_PROTO_DTLS=y
 CONFIG_MBEDTLS_SSL_DTLS_SRTP=y
+CONFIG_MBEDTLS_X509_CREATE_C=y
 
 # Logging
 CONFIG_LOG_DEFAULT_LEVEL=2

@@ -13,7 +13,8 @@ playback (see WEBRTC_PLAN.md for the rationale and design).
 - [x] ESP-IDF firmware: WiFi, OV2640 capture (PSRAM, dual frame buffer).
 - [x] Firmware WebRTC: esp_peer DataChannel (DTLS-SRTP + SCTP) carrying
       chunked JPEG frames, negotiated over a WebSocket signaling connection
-      to the backend; `esp_log()` compat shim for IDF v5.x.
+      to the backend. Firmware is pinned to ESP-IDF v6 (esp_peer's prebuilt
+      library is built against v6).
 - [x] Go backend: WebRTC signaling relay (offer/answer/ICE between browser
       and device, one viewer per device) with an embedded TURN/STUN server
       (pion/turn) for NAT traversal. No ffmpeg, no storage.
