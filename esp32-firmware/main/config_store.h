@@ -7,18 +7,19 @@
 #define CONFIG_STORE_NAMESPACE   "esp32cam"
 #define CONFIG_STORE_KEY         "device_cfg"
 #define CONFIG_STORE_MAGIC       0x43504D31u /* "CPM1" */
-#define CONFIG_STORE_VERSION     1u
+#define CONFIG_STORE_VERSION     2u
 #define CONFIG_SSID_MAX_LEN      32
 #define CONFIG_PASSWORD_MAX_LEN  64
 #define CONFIG_HOST_MAX_LEN      63
+#define CONFIG_TURN_URL_MAX_LEN  127
 #define CONFIG_RESERVED_LEN      64
 
 typedef struct {
     char     wifi_ssid[CONFIG_SSID_MAX_LEN + 1];      /* NUL-terminated */
     char     wifi_password[CONFIG_PASSWORD_MAX_LEN + 1];
-    char     backend_host[CONFIG_HOST_MAX_LEN + 1];
+    char     backend_host[CONFIG_HOST_MAX_LEN + 1];   /* signaling host */
     uint32_t backend_port;                            /* 1..65535 */
-    bool     auto_record;                             /* stored-only for now */
+    char     turn_server[CONFIG_TURN_URL_MAX_LEN + 1];/* "turn:host:port", optional */
     bool     auto_flash;                              /* stored-only for now */
     uint8_t  reserved[CONFIG_RESERVED_LEN];           /* 0 on write */
 } device_config_t;

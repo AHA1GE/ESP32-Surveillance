@@ -57,6 +57,20 @@ esp_err_t config_validate(const device_config_t *cfg)
         return ESP_ERR_INVALID_ARG;
     }
 
+    /* TURN server URL, optional. Deliberately lenient: the value is only ever
+     * parsed by esp_peer, never by printf or a shell, so reject just the
+     * characters that cannot appear in a URL at all. */
+    size_t turn_len = strlen(cfg->turn_server);
+    if (turn_len > CONFIG_TURN_URL_MAX_LEN) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    for (size_t i = 0; i < turn_len; i++) {
+        unsigned char c = (unsigned char)cfg->turn_server[i];
+        if (c <= 0x20 || c == 0x7f) {
+            return ESP_ERR_INVALID_ARG;
+        }
+    }
+
     return ESP_OK;
 }
 
