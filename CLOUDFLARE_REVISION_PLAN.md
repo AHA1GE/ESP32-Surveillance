@@ -408,6 +408,21 @@ implemented.
   `enable_close_reconnect=true` makes the client reconnect after a clean
   close, and a failed app ping cross-checks `esp_websocket_client_is_connected()`
   and self-heals a stale flag within one 30 s cycle.
+- **Second field pass (field-verified 2026-09-03): port-0 dialing and
+  fallback starvation** — with the ext_transport in place, the device dialed
+  "host:0" in a 13 s loop: a hand-built ws transport has no default-port
+  callback, so a port-less URI leaves `config->port = 0` and the client's
+  default-port fill never runs. Fix: the wss URI now carries `:443`
+  explicitly. Independently, the LAN fallback still never engaged because
+  every ERROR/DISCONNECTED of the retry storm re-stamped the disconnect
+  timestamp, keeping the 60 s window from ever elapsing; the stamp now
+  happens only on the transition out of "connected" (`mark_ws_disconnected()`).
+  Same pass: `CONFIG_SPI_FLASH_SUPPORT_BOYA_CHIP=y` (the AI-Thinker's flash
+  is a boya part) silences the boot warning and enables the chip's fast
+  read modes; and a new local-development mode — a `ws://`/`http://` prefix
+  in the backend host makes the device dial plain WS (TCP transport, no
+  TLS, `:80` default) so it can talk to a desktop `wrangler dev` on the LAN
+  (config validation accepts the prefix and the port separator).
 - **CF TURN username length** — resolved by `ICE_CRED_MAX` → 128 (§3.1);
   verified against a real minted credential (exactly 128 hex chars,
   2026-09-02).
