@@ -17,7 +17,6 @@ typedef struct {
 void config_init_defaults(device_config_t *cfg)
 {
     memset(cfg, 0, sizeof(*cfg));
-    cfg->backend_port = 8080;
 }
 
 esp_err_t config_validate(const device_config_t *cfg)
@@ -53,20 +52,16 @@ esp_err_t config_validate(const device_config_t *cfg)
         }
     }
 
-    if (cfg->backend_port == 0 || cfg->backend_port > 65535) {
+    /* The token rides in an HTTP header, so it must be printable ASCII
+     * without spaces/control chars. An empty token would make the Worker
+     * reject every handshake - require one at config time. */
+    size_t token_len = strlen(cfg->auth_token);
+    if (token_len == 0 || token_len > CONFIG_TOKEN_MAX_LEN) {
         return ESP_ERR_INVALID_ARG;
     }
-
-    /* TURN server URL, optional. Deliberately lenient: the value is only ever
-     * parsed by esp_peer, never by printf or a shell, so reject just the
-     * characters that cannot appear in a URL at all. */
-    size_t turn_len = strlen(cfg->turn_server);
-    if (turn_len > CONFIG_TURN_URL_MAX_LEN) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    for (size_t i = 0; i < turn_len; i++) {
-        unsigned char c = (unsigned char)cfg->turn_server[i];
-        if (c <= 0x20 || c == 0x7f) {
+    for (size_t i = 0; i < token_len; i++) {
+        unsigned char c = (unsigned char)cfg->auth_token[i];
+        if (c < 0x21 || c > 0x7e) {
             return ESP_ERR_INVALID_ARG;
         }
     }

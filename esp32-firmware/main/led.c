@@ -63,6 +63,11 @@ static void led_task(void *arg)
             led_set_level(0); vTaskDelay(pdMS_TO_TICKS(80));
             led_set_level(1); vTaskDelay(pdMS_TO_TICKS(560));
             break;
+        case LED_PATTERN_SLOW_BLINK:
+            /* LAN fallback mode: one slow blink per second */
+            led_set_level(0); vTaskDelay(pdMS_TO_TICKS(400));
+            led_set_level(1); vTaskDelay(pdMS_TO_TICKS(600));
+            break;
         case LED_PATTERN_FAST_FLASH:
             led_set_level(0); vTaskDelay(pdMS_TO_TICKS(110));
             led_set_level(1); vTaskDelay(pdMS_TO_TICKS(110));

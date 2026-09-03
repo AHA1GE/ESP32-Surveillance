@@ -6,6 +6,7 @@ dependencies:
   espressif/esp_websocket_client: "*"
   espressif/esp_peer: "^1.5.4"
   espressif/cjson: "*"
+  espressif/mdns: "*"
   idf: ">=6.0"
 
 metadata:

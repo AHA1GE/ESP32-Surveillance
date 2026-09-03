@@ -4,7 +4,8 @@ Revise the platform from a self-hosted Go backend (Docker + embedded coturn-styl
 TURN) to Cloudflare serverless: Workers + Durable Objects + D1 for signaling,
 UI, and presence; Cloudflare Realtime TURN/STUN for NAT traversal; the ESP32
 itself as a LAN fallback. Status: **Phase 1 (Cloudflare side) implemented and
-smoke-tested against `wrangler dev`; Phase 2 (firmware) pending.**
+smoke-tested against `wrangler dev`; Phase 2 (firmware) implemented in code
+(2026-09-03) — pending push → CI build → flash → on-device verification.**
 
 ## Context
 
@@ -203,9 +204,11 @@ authoritative reference. `/api/devices` keeps the exact contract
 - [webrtc_stream.c:454-456](esp32-firmware/main/webrtc_stream.c#L454-L456):
   URI `ws://%s:%lu/signaling/%s` → `wss://%s/signaling/%s` (drop the port;
   `uri[256]` is big enough).
-- TLS: set `.use_global_ca_store = true` in the ws client config + one
-  `esp_tls_set_global_ca_store(esp_crt_bundle_attach)` at boot. The full cert
-  bundle is already compiled in (used by ota.c today) — no sdkconfig change.
+- TLS: per-client `.crt_bundle_attach = esp_crt_bundle_attach` in the ws
+  client config (implemented 2026-09-03; deviation from the global-CA-store
+  wording above — the per-client hook matches ota.c and avoids a boot-time
+  global store the portal never needs). The full cert bundle is already
+  compiled in (used by ota.c today) — no sdkconfig change.
 - Auth header: `websocket_cfg.headers = "Authorization: Bearer <token>\r\n"`
   (esp_websocket_client supports custom headers).
 - App-level ping: send `{"type":"ping"}` every 30 s (counter in the existing
@@ -228,6 +231,9 @@ authoritative reference. `/api/devices` keeps the exact contract
   design, WEBRTC_PLAN.md:152-155).
 - Portal ([web_portal.c](esp32-firmware/main/web_portal.c)): replace the port
   and TURN URL fields with the token field; same validation style.
+- **Implemented 2026-09-03**: token validated non-empty + printable ASCII
+  (0x21–0x7e) in `config_validate`; portal field is
+  `type="password" maxlength="64"`, prefilled and HTML-escaped like the rest.
 
 ### 3.3 LAN fallback (new — replaces the local backend)
 
@@ -239,11 +245,21 @@ When the signaling socket stays disconnected for ~60 s, the device starts a
   uses (`esp_camera_fb_get`, [camera.c:61](esp32-firmware/main/camera.c#L61) —
   same pattern as Espressif's `local_jpeg_stream`); single viewer, latest frame
   only, JPEG staged in the existing PSRAM buffer.
-- mDNS `esp32cam-XXXXXX.local` (`esp_mdns`) so the browser can find it without
-  knowing the IP.
+- mDNS `esp32cam-XXXXXX.local` so the browser can find it without knowing the
+  IP — the `espressif/mdns` managed component (moved out of IDF core in v5.4+;
+  un-prefixed `mdns_*` API, added to idf_component.yml + CMake PRIV_REQUIRES).
 - LED: solid = cloud connected (unchanged); **slow blink = LAN mode**; fast
   flash = error (unchanged). WS auto-reconnect (3 s) keeps trying; on
   CONNECTED the LAN server stops.
+- **Implemented 2026-09-03** as new [lan_stream.c](esp32-firmware/main/lan_stream.c):
+  port-80 httpd, handler grabs the latest frame straight from the camera (the
+  fb already lives in the PSRAM staging buffer — no copy), single viewer by
+  construction (blocking handler on httpd's single server task), a
+  `s_stopping` flag set before `httpd_stop` so a dead camera can't wedge the
+  shutdown. mDNS failure is warn-only — the stream still serves by raw IP.
+  Fallback triggers at 60 s disconnected, counters live in the existing
+  peer-loop task; LED slow-blink via the queue-driven LED task (never LEDC —
+  the camera owns the timer).
 
 ### 3.4 Firmware CI
 
@@ -320,10 +336,14 @@ Production D1 was empty before the run (no real device had connected to the
 new worker yet); the run left one offline `esp32cam-SMOKE-*` presence row.
 Remaining: a browser test with a real firmware device (Phase 2).
 
-**Phase 2 — Firmware:** §3 changes; CI build; flash one camera; one-time portal
-reconfiguration; verify: cloud live view, LAN-direct pair, forced relay (block
-candidate paths or use cell network), and LAN fallback (kill the router's WAN
-or point the host at a dead name → slow blink → MJPEG over mDNS).
+**Phase 2 — Firmware:** §3 code implemented and committed (2026-09-03; files:
+webrtc_stream.c, config_store.h/.c, web_portal.c, lan_stream.c/.h [new],
+led.h/.c, app_main.c, main/CMakeLists.txt, main/idf_component.yml). Remaining
+(Harry): push → firmware CI builds (release-v6.0) → flash one camera → one-time
+portal reconfiguration (v3 wipes stored config: re-enter SSID/password + host
+`espcam.dofor.fun` + token) → verify: cloud live view, LAN-direct pair, forced
+relay (block candidate paths or use cell network), and LAN fallback (kill the
+router's WAN or point the host at a dead name → slow blink → MJPEG over mDNS).
 
 **Phase 3 — Cutover:** flash remaining cameras; after a burn-in week, delete
 `backend/` + docker bits, update README.md/ROADMAP.md, and mark this doc
@@ -348,8 +368,8 @@ implemented.
    streams JPEG; restore WAN → solid LED, LAN server stops.
 5. Auth: WS without header/cookie → 401; wrong token → 401; browser
    login-with-token flow works and persists.
-6. Firmware CI passes on push (existing workflow), Cloudflare PR workflow
-   passes.
+6. Firmware CI passes on push (existing workflow, release-v6.0 — pending the
+   first Phase 2 push), Cloudflare PR workflow passes.
 
 ## 7. Risks and gotchas
 

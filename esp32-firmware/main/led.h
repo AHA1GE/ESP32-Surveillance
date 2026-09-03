@@ -7,6 +7,7 @@ typedef enum {
     LED_PATTERN_OFF = 0,      /* LED dark */
     LED_PATTERN_SOLID,        /* streaming to a connected backend */
     LED_PATTERN_DOUBLE_BLINK, /* config portal mode */
+    LED_PATTERN_SLOW_BLINK,   /* LAN fallback: cloud unreachable, MJPEG on LAN */
     LED_PATTERN_FAST_FLASH,   /* error: camera fail, backend down, invalid submit */
 } led_pattern_t;
 

@@ -10,7 +10,6 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #define TAG "web_portal"
@@ -18,7 +17,7 @@
 #define MAX_FORM_BODY 2048
 
 /* Pure HTML, no JS, no client-side verification - validation is server-side
- * only. %s placeholders: ssid, pass, host, port, turn, checked-auto_flash. */
+ * only. %s placeholders: ssid, pass, host, token, checked-auto_flash. */
 static const char FORM_TEMPLATE[] =
     "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
     "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
@@ -28,8 +27,7 @@ static const char FORM_TEMPLATE[] =
     "<label>WiFi SSID<br><input type=\"text\" name=\"ssid\" maxlength=\"32\" value=\"%s\"></label><br>"
     "<label>WiFi Password<br><input type=\"password\" name=\"pass\" maxlength=\"63\" value=\"%s\"></label><br>"
     "<label>Server Host<br><input type=\"text\" name=\"host\" maxlength=\"63\" value=\"%s\"></label><br>"
-    "<label>Server Port<br><input type=\"number\" name=\"port\" min=\"1\" max=\"65535\" value=\"%lu\"></label><br>"
-    "<label>TURN Server URL (optional)<br><input type=\"text\" name=\"turn\" maxlength=\"127\" value=\"%s\"></label><br>"
+    "<label>Auth Token<br><input type=\"password\" name=\"token\" maxlength=\"64\" value=\"%s\"></label><br>"
     "<label><input type=\"checkbox\" name=\"auto_flash\"%s> Auto-flash light (reserved, future use)</label><br>"
     "<input type=\"submit\" value=\"Save and Reboot\">"
     "</form></body></html>";
@@ -71,17 +69,16 @@ static esp_err_t send_form(httpd_req_t *req, const device_config_t *cfg)
     char ssid_esc[CONFIG_SSID_MAX_LEN * 6 + 1];
     char pass_esc[CONFIG_PASSWORD_MAX_LEN * 6 + 1];
     char host_esc[CONFIG_HOST_MAX_LEN * 6 + 1];
-    char turn_esc[CONFIG_TURN_URL_MAX_LEN * 6 + 1];
+    char token_esc[CONFIG_TOKEN_MAX_LEN * 6 + 1];
 
     html_escape(cfg->wifi_ssid, ssid_esc, sizeof(ssid_esc));
     html_escape(cfg->wifi_password, pass_esc, sizeof(pass_esc));
     html_escape(cfg->backend_host, host_esc, sizeof(host_esc));
-    html_escape(cfg->turn_server, turn_esc, sizeof(turn_esc));
+    html_escape(cfg->auth_token, token_esc, sizeof(token_esc));
 
     int n = snprintf(page, sizeof(page), FORM_TEMPLATE,
                      ssid_esc, pass_esc, host_esc,
-                     (unsigned long)cfg->backend_port,
-                     turn_esc,
+                     token_esc,
                      cfg->auto_flash ? " checked" : "");
     if (n < 0 || (size_t)n >= sizeof(page)) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Form too large");
@@ -166,13 +163,8 @@ static esp_err_t parse_form(const char *body, device_config_t *cfg)
             strlcpy(cfg->wifi_password, val_dec, sizeof(cfg->wifi_password));
         } else if (strcmp(key_dec, "host") == 0) {
             strlcpy(cfg->backend_host, val_dec, sizeof(cfg->backend_host));
-        } else if (strcmp(key_dec, "port") == 0) {
-            char *end = NULL;
-            unsigned long p = strtoul(val_dec, &end, 10);
-            /* a bad port becomes 0, which config_validate rejects */
-            cfg->backend_port = (p >= 1 && p <= 65535 && end && *end == '\0') ? (uint32_t)p : 0;
-        } else if (strcmp(key_dec, "turn") == 0) {
-            strlcpy(cfg->turn_server, val_dec, sizeof(cfg->turn_server));
+        } else if (strcmp(key_dec, "token") == 0) {
+            strlcpy(cfg->auth_token, val_dec, sizeof(cfg->auth_token));
         } else if (strcmp(key_dec, "auto_flash") == 0) {
             cfg->auto_flash = true;
         }

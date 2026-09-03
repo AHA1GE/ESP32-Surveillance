@@ -7,19 +7,23 @@
 #define CONFIG_STORE_NAMESPACE   "esp32cam"
 #define CONFIG_STORE_KEY         "device_cfg"
 #define CONFIG_STORE_MAGIC       0x43504D31u /* "CPM1" */
-#define CONFIG_STORE_VERSION     2u
+#define CONFIG_STORE_VERSION     3u
 #define CONFIG_SSID_MAX_LEN      32
 #define CONFIG_PASSWORD_MAX_LEN  64
 #define CONFIG_HOST_MAX_LEN      63
-#define CONFIG_TURN_URL_MAX_LEN  127
+#define CONFIG_TOKEN_MAX_LEN     64
 #define CONFIG_RESERVED_LEN      64
 
+/* v3 (Cloudflare revision): backend_port and turn_server are gone - the
+ * signaling socket is wss:// on 443 to the Worker hostname and ICE servers
+ * (STUN/TURN) arrive per-session in the viewer's offer. The shared auth
+ * token replaces them; it is sent as `Authorization: Bearer <token>` on the
+ * signaling handshake. */
 typedef struct {
     char     wifi_ssid[CONFIG_SSID_MAX_LEN + 1];      /* NUL-terminated */
     char     wifi_password[CONFIG_PASSWORD_MAX_LEN + 1];
-    char     backend_host[CONFIG_HOST_MAX_LEN + 1];   /* signaling host */
-    uint32_t backend_port;                            /* 1..65535 */
-    char     turn_server[CONFIG_TURN_URL_MAX_LEN + 1];/* "turn:host:port", optional */
+    char     backend_host[CONFIG_HOST_MAX_LEN + 1];   /* Worker hostname, e.g. espcam.dofor.fun */
+    char     auth_token[CONFIG_TOKEN_MAX_LEN + 1];    /* shared auth token */
     bool     auto_flash;                              /* stored-only for now */
     uint8_t  reserved[CONFIG_RESERVED_LEN];           /* 0 on write */
 } device_config_t;
@@ -44,5 +48,5 @@ esp_err_t config_store_save(const device_config_t *cfg);
 /** Pure field validation, no NVS. ESP_OK or ESP_ERR_INVALID_ARG. */
 esp_err_t config_validate(const device_config_t *cfg);
 
-/** Zeroes cfg and applies safe defaults (port 8080, bools false, empty strings). */
+/** Zeroes cfg and applies safe defaults (bools false, empty strings). */
 void config_init_defaults(device_config_t *cfg);

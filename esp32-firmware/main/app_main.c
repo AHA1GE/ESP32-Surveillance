@@ -134,8 +134,7 @@ static void enter_portal_mode(void)
 
 static void run_normal_mode(const device_config_t *cfg)
 {
-    ESP_LOGI(TAG, "Normal mode: backend %s:%lu",
-             cfg->backend_host, (unsigned long)cfg->backend_port);
+    ESP_LOGI(TAG, "Normal mode: backend https://%s", cfg->backend_host);
 
     /* "backend not connected" until the WebSocket reports CONNECTED */
     led_set_pattern(LED_PATTERN_FAST_FLASH);
