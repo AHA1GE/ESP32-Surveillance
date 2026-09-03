@@ -11,7 +11,14 @@
     // for them; everything else (favicons etc.) is served asset-first.
     // The WS routes (/signaling/*, /view-signaling/*) never match assets and
     // reach the Worker anyway.
-    "run_worker_first": ["/", "/view/*", "/api/*"]
+    "run_worker_first": ["/", "/view", "/view.html", "/view/*", "/api/*"],
+    // The asset layer's default "pretty URL" handling 307s /view.html ->
+    // /view. The Worker fetches /view.html to serve the /view/{id} route,
+    // and the browser followed that redirect to /view - stripping the
+    // device id, so the page dialed /view-signaling/%2Fview (404 loop,
+    // field-verified 2026-09-03). "none" serves the file directly; the
+    // Worker redirects the bare /view forms to the device list instead.
+    "html_handling": "none"
   },
   "routes": [{ "pattern": "espcam.dofor.fun", "custom_domain": true }],
   "d1_databases": [

@@ -208,6 +208,14 @@ export default {
       return env.ASSETS.fetch(request);
     }
 
+    if (url.pathname === "/view" || url.pathname === "/view.html") {
+      // The view page needs a device id in the URL (/view/{id}); a bare
+      // /view (or a stale /view.html bookmark) has nothing to connect to,
+      // so land on the device list instead. (Response.redirect needs an
+      // absolute URL - a bare "/" throws "Unable to parse URL" in workerd.)
+      return Response.redirect(new URL("/", request.url).toString(), 302);
+    }
+
     const vm = url.pathname.match(/^\/view\/([a-zA-Z0-9-]{1,64})$/);
     if (vm) {
       if (request.method !== "GET") {

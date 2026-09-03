@@ -467,6 +467,17 @@ implemented.
   context closes never flushed at all in probing.
 - **Browsers can't set WS headers** — cookie flow (§2.1); token never appears
   in URLs (no query-param leak into logs).
+- **Assets "pretty URL" redirect stripped the device id off /view/{id}
+  (field-verified 2026-09-03)** — the Worker serves the viewer page by
+  fetching `/view.html` from the ASSETS binding, and the asset layer's
+  default html_handling 307s that to `/view`; the browser followed the
+  redirect, view.html read the device id from the now-bare path and dialed
+  `/view-signaling/%2Fview` in a 404 retry loop (device showed
+  `sent=0.0fps` — no viewer ever reached it). Fix: `html_handling: "none"`
+  in wrangler.jsonc (the file is served directly, so the id survives in the
+  browser URL) plus a Worker redirect of bare `/view` and `/view.html` to
+  the device list. Also note `Response.redirect("/")` throws "Unable to
+  parse URL" in workerd — the target must be absolute.
 - **Workers can't send WS control pings to the device** — app-level `ping`
   both directions instead (§3.1); the edge's own 20 s ping/pong is handled by
   the ws library automatically.
