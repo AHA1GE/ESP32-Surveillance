@@ -476,8 +476,10 @@ implemented.
   `sent=0.0fps` — no viewer ever reached it). Fix: `html_handling: "none"`
   in wrangler.jsonc (the file is served directly, so the id survives in the
   browser URL) plus a Worker redirect of bare `/view` and `/view.html` to
-  the device list. Also note `Response.redirect("/")` throws "Unable to
-  parse URL" in workerd — the target must be absolute.
+  the device list. Two knock-on effects of "none", both docs-consistent:
+  it also disables root index resolution, so the Worker must fetch
+  `/index.html` by name for `/`; and `Response.redirect("/")` throws
+  "Unable to parse URL" in workerd — the target must be absolute.
 - **Workers can't send WS control pings to the device** — app-level `ping`
   both directions instead (§3.1); the edge's own 20 s ping/pong is handled by
   the ws library automatically.

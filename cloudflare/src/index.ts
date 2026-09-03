@@ -205,7 +205,10 @@ export default {
       if (request.method !== "GET") {
         return new Response("method not allowed", { status: 405 });
       }
-      return env.ASSETS.fetch(request);
+      // html_handling "none" (set to stop the /view.html -> /view redirect
+      // from stripping the device id) also stops the root from resolving
+      // index.html implicitly, so ask for the file by name.
+      return env.ASSETS.fetch(new Request(new URL("/index.html", request.url), request));
     }
 
     if (url.pathname === "/view" || url.pathname === "/view.html") {
