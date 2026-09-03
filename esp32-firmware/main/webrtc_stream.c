@@ -13,6 +13,7 @@
 #include <esp_tls.h>
 #include <esp_transport.h>
 #include <esp_transport_ssl.h>
+#include <esp_transport_tcp.h>
 #include <esp_transport_ws.h>
 #include <esp_websocket_client.h>
 #include <freertos/FreeRTOS.h>
@@ -68,12 +69,14 @@
 #define DC_LABEL            "video_data"
 
 static esp_websocket_client_handle_t s_ws;
-/* Signaling TLS transport, built by us in webrtc_stream_init so the backend
- * hostname resolves over IPv4 only (see the addr_family pin below). The ws
- * client never frees an ext_transport, so these handles are ours to destroy
- * - and ws_destroy does not free its ssl parent, so both are kept. */
+/* Signaling transports, built by us in webrtc_stream_init. Production wss:
+ * the parent is an esp-tls transport with the addr_family pinned to IPv4 so
+ * the backend hostname resolves over IPv4 only (see the pin below); local
+ * dev (ws://): the parent is plain TCP. The ws client never frees an
+ * ext_transport, so these handles are ours to destroy - and ws_destroy
+ * does not free its parent, so both are kept. */
 static esp_transport_handle_t s_ws_transport;
-static esp_transport_handle_t s_ws_ssl_transport;
+static esp_transport_handle_t s_ws_parent_transport;
 static esp_peer_handle_t s_peer;
 static uint8_t *s_staging;
 static uint8_t *s_chunk; /* PSRAM: one wire-frame chunk, reused per send */
@@ -468,6 +471,20 @@ static void handle_ws_message(const char *data, int len)
     cJSON_Delete(root);
 }
 
+/* Mark signaling as gone. The LAN-fallback countdown starts only on the
+ * transition out of "connected": a retry storm fires ERROR/DISCONNECTED
+ * every ~13 s (one per connect timeout) and re-stamping on each of them
+ * would keep pushing the LAN_FALLBACK_MS window out forever - the fallback
+ * would never engage (field-verified 2026-09-03). */
+static void mark_ws_disconnected(void)
+{
+    if (s_ws_connected) {
+        s_disconnected_at_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    }
+    s_ws_connected = false;
+    led_update();
+}
+
 static void websocket_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id,
                                     void *event_data)
 {
@@ -481,9 +498,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
             break;
         case WEBSOCKET_EVENT_DISCONNECTED:
             ESP_LOGW(TAG, "Signaling WebSocket disconnected");
-            s_ws_connected = false;
-            s_disconnected_at_ms = (uint32_t)(esp_timer_get_time() / 1000);
-            led_update();
+            mark_ws_disconnected();
             esp_peer_disconnect(s_peer);
             s_dc_open = false;
             break;
@@ -494,9 +509,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
              * run. The client's own reconnect is governed by
              * enable_close_reconnect in the config below. */
             ESP_LOGW(TAG, "Signaling WebSocket closed by server");
-            s_ws_connected = false;
-            s_disconnected_at_ms = (uint32_t)(esp_timer_get_time() / 1000);
-            led_update();
+            mark_ws_disconnected();
             esp_peer_disconnect(s_peer);
             s_dc_open = false;
             break;
@@ -507,9 +520,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
             break;
         case WEBSOCKET_EVENT_ERROR:
             ESP_LOGE(TAG, "Signaling WebSocket error");
-            s_ws_connected = false;
-            s_disconnected_at_ms = (uint32_t)(esp_timer_get_time() / 1000);
-            led_update();
+            mark_ws_disconnected();
             break;
         default:
             break;
@@ -571,8 +582,27 @@ esp_err_t webrtc_stream_init(const device_config_t *cfg, const char *device_id)
 
     strlcpy(s_device_id, device_id, sizeof(s_device_id));
 
+    /* A ws:// or http:// prefix marks the local-development mode: the
+     * device dials a plain-WebSocket server (`wrangler dev` on the LAN)
+     * with no TLS. Anything else is production wss. The explicit :443 /
+     * :80 matters: a hand-built ws transport has no default-port callback,
+     * so a port-less URI would leave config->port = 0 and every connect
+     * would dial port 0 (field-verified 2026-09-03: "Error connecting to
+     * host ...:0" on the first ext_transport firmware). */
+    bool plain_ws = (strncmp(cfg->backend_host, "ws://", 5) == 0 ||
+                     strncmp(cfg->backend_host, "http://", 7) == 0);
+    const char *scheme_prefix = strstr(cfg->backend_host, "://");
+    const char *host_part = scheme_prefix ? scheme_prefix + 3 : cfg->backend_host;
+
     char uri[256];
-    snprintf(uri, sizeof(uri), "wss://%s/signaling/%s", cfg->backend_host, device_id);
+    if (plain_ws) {
+        /* Port-less local hosts default to :80 so config->port is never 0. */
+        snprintf(uri, sizeof(uri), "ws://%s%s/signaling/%s", host_part,
+                 strchr(host_part, ':') ? "" : ":80", device_id);
+    } else {
+        snprintf(uri, sizeof(uri), "wss://%s:443/signaling/%s",
+                 cfg->backend_host, device_id);
+    }
 
     /* The ws client keeps the header pointer, so it must outlive the client
      * - a static buffer rewritten only when init runs again (after the
@@ -581,36 +611,49 @@ esp_err_t webrtc_stream_init(const device_config_t *cfg, const char *device_id)
     snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s\r\n",
              cfg->auth_token);
 
-    /* Build the TLS transport ourselves and pin its address family to IPv4.
-     * Cloudflare's front publishes AAAA records for the backend host; with
-     * lwIP caching only the first DNS answer, the device can end up holding
-     * just an IPv6 address and then every connect dies on a network whose
-     * IPv6 is not actually usable (field-verified 2026-09-03: 10 s connect
-     * timeout loop while IPv4 clients on the same network worked fine).
-     * CONFIG_LWIP_IPV6 must stay enabled because esp_peer compiles against
-     * IPv6 socket types, so the IPv4-only rule is applied here instead -
-     * getaddrinfo() then only ever returns an A record for this host. */
-    esp_transport_handle_t ssl_transport = esp_transport_ssl_init();
-    if (!ssl_transport) {
-        ESP_LOGE(TAG, "Failed to create signaling TLS transport");
+    /* Build the transport chain ourselves rather than letting the client
+     * assemble one. Production (wss): pin the address family to IPv4 -
+     * Cloudflare's front publishes AAAA records for the backend host, and
+     * with lwIP caching only the first DNS answer the device can end up
+     * holding just an IPv6 address, after which every connect dies on a
+     * network whose IPv6 is not actually usable (field-verified 2026-09-03:
+     * 10 s connect timeout loop while IPv4 clients on the same network
+     * worked fine). CONFIG_LWIP_IPV6 must stay enabled because esp_peer
+     * compiles against IPv6 socket types, so the IPv4-only rule is applied
+     * here instead - getaddrinfo() then only ever returns an A record for
+     * this host. Local development (ws://): plain TCP, no TLS at all - the
+     * desktop dev server has no certificate. */
+    esp_transport_handle_t parent_transport = NULL;
+    esp_transport_handle_t ws_transport = NULL;
+    if (plain_ws) {
+        parent_transport = esp_transport_tcp_init();
+    } else {
+        parent_transport = esp_transport_ssl_init();
+        if (parent_transport) {
+            /* Same cert policy the client config used before: verify the
+             * Worker's certificate against the bundled CA store. */
+            esp_transport_ssl_crt_bundle_attach(parent_transport, esp_crt_bundle_attach);
+            esp_transport_ssl_set_addr_family(parent_transport, ESP_TLS_AF_INET);
+        }
+    }
+    if (!parent_transport) {
+        ESP_LOGE(TAG, "Failed to create signaling transport");
         esp_peer_close(s_peer);
         s_peer = NULL;
         return ESP_FAIL;
     }
-    /* Same cert policy the client config used before: verify the Worker's
-     * certificate against the bundled CA store. */
-    esp_transport_ssl_crt_bundle_attach(ssl_transport, esp_crt_bundle_attach);
-    esp_transport_ssl_set_addr_family(ssl_transport, ESP_TLS_AF_INET);
-    esp_transport_handle_t ws_transport = esp_transport_ws_init(ssl_transport);
+    ws_transport = esp_transport_ws_init(parent_transport);
     if (!ws_transport) {
         ESP_LOGE(TAG, "Failed to create signaling WS transport");
-        esp_transport_destroy(ssl_transport);
+        esp_transport_destroy(parent_transport);
         esp_peer_close(s_peer);
         s_peer = NULL;
         return ESP_FAIL;
     }
-    s_ws_ssl_transport = ssl_transport;
+    s_ws_parent_transport = parent_transport;
     s_ws_transport = ws_transport;
+    ESP_LOGI(TAG, "Signaling transport: %s",
+             plain_ws ? "plain ws (local dev)" : "wss + IPv4 pin");
 
     esp_websocket_client_config_t websocket_cfg = {
         .uri = uri,
@@ -639,6 +682,12 @@ esp_err_t webrtc_stream_init(const device_config_t *cfg, const char *device_id)
     s_ws = esp_websocket_client_init(&websocket_cfg);
     if (!s_ws) {
         ESP_LOGE(TAG, "Failed to initialize WebSocket client");
+        /* The ext_transport is only attached inside client_start, so a
+         * failed init never saw our handles - destroy them here. */
+        esp_transport_destroy(s_ws_transport);
+        esp_transport_destroy(s_ws_parent_transport);
+        s_ws_transport = NULL;
+        s_ws_parent_transport = NULL;
         esp_peer_close(s_peer);
         s_peer = NULL;
         return ESP_FAIL;
@@ -652,9 +701,9 @@ esp_err_t webrtc_stream_init(const device_config_t *cfg, const char *device_id)
         esp_websocket_client_destroy(s_ws);
         s_ws = NULL;
         esp_transport_destroy(s_ws_transport);
-        esp_transport_destroy(s_ws_ssl_transport);
+        esp_transport_destroy(s_ws_parent_transport);
         s_ws_transport = NULL;
-        s_ws_ssl_transport = NULL;
+        s_ws_parent_transport = NULL;
         esp_peer_close(s_peer);
         s_peer = NULL;
         return ESP_FAIL;
@@ -666,9 +715,9 @@ esp_err_t webrtc_stream_init(const device_config_t *cfg, const char *device_id)
         esp_websocket_client_destroy(s_ws);
         s_ws = NULL;
         esp_transport_destroy(s_ws_transport);
-        esp_transport_destroy(s_ws_ssl_transport);
+        esp_transport_destroy(s_ws_parent_transport);
         s_ws_transport = NULL;
-        s_ws_ssl_transport = NULL;
+        s_ws_parent_transport = NULL;
         esp_peer_close(s_peer);
         s_peer = NULL;
         return ESP_FAIL;

@@ -44,10 +44,25 @@ esp_err_t config_validate(const device_config_t *cfg)
     if (host_len == 0 || host_len > CONFIG_HOST_MAX_LEN) {
         return ESP_ERR_INVALID_ARG;
     }
-    for (size_t i = 0; i < host_len; i++) {
+    /* A ws:// or http:// prefix marks the local-dev mode (plain WS to a
+     * desktop `wrangler dev`); past the prefix the host may also carry a
+     * port (":"), e.g. ws://192.168.1.50:8787. Production hostnames stay
+     * scheme-less. */
+    size_t start = 0;
+    int with_port = 0;
+    if (strncmp(cfg->backend_host, "ws://", 5) == 0 ||
+        strncmp(cfg->backend_host, "http://", 7) == 0) {
+        start = (size_t)(strstr(cfg->backend_host, "://") - cfg->backend_host) + 3;
+        if (start >= host_len) {
+            return ESP_ERR_INVALID_ARG; /* scheme prefix with no host */
+        }
+        with_port = 1;
+    }
+    for (size_t i = start; i < host_len; i++) {
         char c = cfg->backend_host[i];
         if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-              (c >= '0' && c <= '9') || c == '.' || c == '-')) {
+              (c >= '0' && c <= '9') || c == '.' || c == '-' ||
+              (with_port && c == ':'))) {
             return ESP_ERR_INVALID_ARG;
         }
     }

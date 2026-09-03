@@ -22,6 +22,11 @@ CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 # TLS certificate bundle for HTTPS
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 
+# The AI-Thinker ESP32-CAM's flash is a boya part; enable its driver so the
+# boot loader stops warning "Detected boya flash chip but using generic
+# driver" and the chip's fast read modes are actually used.
+CONFIG_SPI_FLASH_SUPPORT_BOYA_CHIP=y
+
 # IPv6 stays ENABLED on purpose: esp_peer 1.5.4 uses struct sockaddr_in6
 # without LWIP_IPV6 guards in its transport sources, and IDF v6's esp_netif
 # likewise touches netif IPv6 fields unguarded, so CONFIG_LWIP_IPV6=n does not
