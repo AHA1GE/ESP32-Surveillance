@@ -1,3 +1,11 @@
 {
-    "cmake.sourceDirectory": "D:/Harry/ESP32-Surveillance/esp32-firmware"
+  "cmake.sourceDirectory": "D:/Harry/ESP32-Surveillance/esp32-firmware",
+  "idf.currentSetup": "C:\\esp\\v6.0\\esp-idf",
+  "idf.customExtraVars": {},
+  "clangd.path": "C:\\Espressif\\tools\\esp-clang\\esp-20.1.1_20250829\\esp-clang\\bin\\clangd.exe",
+  "clangd.arguments": [
+    "--background-index",
+    "--query-driver=**",
+    "--compile-commands-dir=d:\\Harry\\ESP32-Surveillance\\build"
+  ]
 }
