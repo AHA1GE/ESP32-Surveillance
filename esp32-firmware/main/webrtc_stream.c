@@ -227,10 +227,15 @@ static void peer_task(void *arg)
             if (now_ms - last_ping_ms >= APP_PING_INTERVAL_MS) {
                 last_ping_ms = now_ms;
                 static const char ping[] = "{\"type\":\"ping\"}";
-                esp_err_t err = esp_websocket_client_send_text(
+                /* send_text returns the number of bytes written, or -1 on
+                 * error - it is NOT an esp_err_t, so a successful 15-byte
+                 * ping compared unequal to ESP_OK and the old check warned
+                 * "ping send failed: 0xf" on every good ping
+                 * (field-verified 2026-09-03). */
+                int sent = esp_websocket_client_send_text(
                     s_ws, ping, sizeof(ping) - 1, pdMS_TO_TICKS(WS_SEND_TIMEOUT_MS));
-                if (err != ESP_OK) {
-                    ESP_LOGW(TAG, "ping send failed: 0x%x", err);
+                if (sent < 0) {
+                    ESP_LOGW(TAG, "ping send failed: %d", sent);
                     /* A failed ping can mean the client lost the connection
                      * without our handler seeing the event (the Worker closes
                      * cleanly on idle-kill/redeploy and the old code never
@@ -514,6 +519,18 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
             s_dc_open = false;
             break;
         case WEBSOCKET_EVENT_DATA:
+            /* Control frames ride WEBSOCKET_EVENT_DATA too: the transport's
+             * propagate_control_frames stays true so the client's read loop
+             * sees CLOSE frames and fires WEBSOCKET_EVENT_CLOSED (which
+             * enable_close_reconnect depends on). The client also dispatches
+             * every read as a DATA event before its own PING/PONG/CLOSE
+             * handling, so workerd's protocol pings (~every 10 s) and the
+             * server's close frame arrive here as non-JSON payloads - skip
+             * anything that is not a text frame. The client answers the
+             * pings itself; the app never has to. */
+            if (data->op_code != WS_TRANSPORT_OPCODES_TEXT) {
+                break;
+            }
             /* One event carries a whole signaling message: buffer_size (8KB)
              * exceeds the largest SDP/JSON the backend sends us. */
             handle_ws_message(data->data_ptr, data->data_len);

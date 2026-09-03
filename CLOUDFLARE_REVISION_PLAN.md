@@ -433,6 +433,21 @@ implemented.
   `esp_transport_ws_init()` the firmware calls `esp_transport_ws_set_config()`
   itself with the `/signaling/{id}` path, the Bearer header, and
   `propagate_control_frames` — the same config the client would have applied.
+- **Third field pass (field-verified 2026-09-03): control frames as DATA and
+  the send_text return contract** — with the handshake fixed, the serial log
+  showed two new warnings. (1) `unparseable signaling JSON` every ~10 s:
+  workerd pings hibernatable sockets at that cadence, and with
+  `propagate_control_frames` the client dispatches *every* read as
+  `WEBSOCKET_EVENT_DATA` before its own PING/PONG/CLOSE handling (which still
+  auto-PONGs), so the empty ping payloads reached the cJSON parser. The app
+  now ignores any DATA event whose `op_code` is not TEXT — propagate stays
+  true, because it is also what lets the client see CLOSE frames and fire
+  `WEBSOCKET_EVENT_CLOSED` for `enable_close_reconnect` (without it, a clean
+  server close left the transport spinning on read timeouts — the zombie
+  mode). (2) `ping send failed: 0xf` every 30 s: `send_text` returns the
+  number of bytes written (15) or -1, not `esp_err_t`, so the old
+  `err != ESP_OK` check warned on every *successful* ping (0xf = 15 = the
+  ping's length). The check is now `sent < 0`.
 - **CF TURN username length** — resolved by `ICE_CRED_MAX` → 128 (§3.1);
   verified against a real minted credential (exactly 128 hex chars,
   2026-09-02).
