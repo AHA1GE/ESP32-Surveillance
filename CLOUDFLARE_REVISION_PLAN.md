@@ -338,7 +338,10 @@ Remaining: a browser test with a real firmware device (Phase 2).
 
 **Phase 2 — Firmware:** §3 code implemented and committed (2026-09-03; files:
 webrtc_stream.c, config_store.h/.c, web_portal.c, lan_stream.c/.h [new],
-led.h/.c, app_main.c, main/CMakeLists.txt, main/idf_component.yml). Remaining
+led.h/.c, app_main.c, main/CMakeLists.txt, main/idf_component.yml, and — from
+the first on-device test the same day — sdkconfig.defaults + webrtc_stream.c
+for the IPv6/AAAA reachability fix and the LED/timer fixes, see §7).
+Remaining
 (Harry): push → firmware CI builds (release-v6.0) → flash one camera → one-time
 portal reconfiguration (v3 wipes stored config: re-enter SSID/password + host
 `espcam.dofor.fun` + token) → verify: cloud live view, LAN-direct pair, forced
@@ -373,6 +376,26 @@ implemented.
 
 ## 7. Risks and gotchas
 
+- **Cloudflare AAAA records vs a half-usable IPv6 network (field-verified
+  2026-09-03)** — the first on-device test looped: TLS connect to the Worker
+  timed out every 10 s (errno 119, select() timeout) while IPv4 clients on the
+  same network worked. Root cause: the device resolved the backend host to
+  its AAAA record and the connect went over a v6 path that hangs instead of
+  failing fast, with lwIP caching only one address per hostname so no v4
+  fallback was available. Fix: the signaling WebSocket TLS transport is
+  pinned to `ESP_TLS_AF_INET` in webrtc_stream.c (the client is handed our own
+  `ext_transport`, built with `esp_transport_ssl_set_addr_family`), so
+  getaddrinfo() only ever returns an A record for the backend host.
+  `CONFIG_LWIP_IPV6` must stay enabled — esp_peer 1.5.4 uses
+  `struct sockaddr_in6` without `LWIP_IPV6` guards and IDF v6's esp_netif
+  likewise, so an IPv4-only lwIP does not compile; esp_peer itself already
+  runs with `ipv6_support=false` (its default), so the WS connect was the
+  only IPv6-exposed path. Also fixed on the same
+  pass: the ws error handler repainted FAST_FLASH over the LAN mode's
+  SLOW_BLINK on every failed reconnect (LAN mode now owns the LED via one
+  `led_update()`), and the 30 s ping / 60 s fallback timers moved from
+  peer-loop tick counting to wall clock so a stretched `esp_peer_main_loop`
+  can't delay them.
 - **CF TURN username length** — resolved by `ICE_CRED_MAX` → 128 (§3.1);
   verified against a real minted credential (exactly 128 hex chars,
   2026-09-02).

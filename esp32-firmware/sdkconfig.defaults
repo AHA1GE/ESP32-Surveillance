@@ -22,6 +22,18 @@ CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 # TLS certificate bundle for HTTPS
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 
+# IPv6 stays ENABLED on purpose: esp_peer 1.5.4 uses struct sockaddr_in6
+# without LWIP_IPV6 guards in its transport sources, and IDF v6's esp_netif
+# likewise touches netif IPv6 fields unguarded, so CONFIG_LWIP_IPV6=n does not
+# compile. The Cloudflare AAAA problem (field-verified 2026-09-03: the device
+# held only the Worker's IPv6 address and every TLS connect timed out after
+# 10 s while IPv4 clients on the same network worked fine) is fixed at the one
+# place the device dials out over TLS instead: the signaling WebSocket
+# transport is pinned to ESP_TLS_AF_INET in webrtc_stream.c, so getaddrinfo()
+# only ever returns an A record for the backend host. Everything else is IPv4
+# by construction (portal, camera, LAN stream, mDNS).
+CONFIG_LWIP_IPV6=y
+
 # DTLS + SRTP extensions + X.509 creation, required by esp_peer (its README
 # lists them as hard prerequisites for the WebRTC stack; X509_CREATE_C is a
 # real Kconfig option from IDF v6 onward).

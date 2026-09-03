@@ -8,7 +8,12 @@
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_peer.h>
+#include <esp_timer.h>
 #include <esp_peer_default.h>
+#include <esp_tls.h>
+#include <esp_transport.h>
+#include <esp_transport_ssl.h>
+#include <esp_transport_ws.h>
 #include <esp_websocket_client.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -51,17 +56,24 @@
 
 /* App-level ping: the Worker expires idle device slots by message traffic,
  * not TCP liveness, so ping every 30 s while connected. (The library-level
- * WS pings answer the edge's protocol pings automatically.) Counted in
- * peer-loop ticks; vTaskDelay means the real interval is >= 30 s, which the
- * Worker's 90 s idle window tolerates. */
-#define APP_PING_INTERVAL_TICKS  (30000 / PEER_LOOP_PERIOD_MS)
+ * WS pings answer the edge's protocol pings automatically.) Wall clock, not
+ * peer-loop ticks - main_loop's duration can stretch, and the Worker's 90 s
+ * idle window does not tolerate a stretched ping interval. */
+#define APP_PING_INTERVAL_MS    30000
 /* Offline for ~60 s: the cloud is unreachable, start the LAN MJPEG fallback
- * (the ws client keeps retrying every 3 s underneath). */
-#define LAN_FALLBACK_TICKS       (60000 / PEER_LOOP_PERIOD_MS)
+ * (the ws client keeps retrying every 3 s underneath). Wall clock too, so a
+ * slow peer loop can't stretch the threshold into hours. */
+#define LAN_FALLBACK_MS         60000
 
 #define DC_LABEL            "video_data"
 
 static esp_websocket_client_handle_t s_ws;
+/* Signaling TLS transport, built by us in webrtc_stream_init so the backend
+ * hostname resolves over IPv4 only (see the addr_family pin below). The ws
+ * client never frees an ext_transport, so these handles are ours to destroy
+ * - and ws_destroy does not free its ssl parent, so both are kept. */
+static esp_transport_handle_t s_ws_transport;
+static esp_transport_handle_t s_ws_ssl_transport;
 static esp_peer_handle_t s_peer;
 static uint8_t *s_staging;
 static uint8_t *s_chunk; /* PSRAM: one wire-frame chunk, reused per send */
@@ -75,6 +87,13 @@ static char s_device_id[16];
  * streaming task - so these are all volatile. */
 static volatile bool s_dc_open;
 static volatile bool s_ws_connected;
+/* ms timestamp of the last ws disconnect, set by the ws event handler; the
+ * peer task compares it against the wall clock for the LAN fallback. */
+static volatile uint32_t s_disconnected_at_ms;
+/* Set by the peer task while the LAN stream is serving: the ws handler must
+ * not repaint the LED back to FAST_FLASH while LAN mode is active - cloud
+ * errors are the whole reason the mode exists. */
+static volatile bool s_lan_active;
 static volatile esp_peer_state_t s_peer_state = ESP_PEER_STATE_DISCONNECTED;
 
 /* ICE server storage, filled when an offer (with attached STUN/TURN)
@@ -176,19 +195,34 @@ static int on_peer_data(esp_peer_data_frame_t *frame, void *ctx)
     return 0;
 }
 
+/* The LED shows the system mode: solid = cloud connected, slow blink = LAN
+ * fallback serving, fast flash = error. Single owner function so the ws
+ * handler's error events can't clobber SLOW_BLINK - they fire on every
+ * failed reconnect attempt, which is the norm in LAN mode. */
+static void led_update(void)
+{
+    if (s_ws_connected) {
+        led_set_pattern(LED_PATTERN_SOLID);
+    } else if (s_lan_active) {
+        led_set_pattern(LED_PATTERN_SLOW_BLINK);
+    } else {
+        led_set_pattern(LED_PATTERN_FAST_FLASH);
+    }
+}
+
 static void peer_task(void *arg)
 {
-    /* Counters are task-local, so no cross-task synchronization. */
-    uint32_t ping_ticks = 0;
-    uint32_t offline_ticks = 0;
+    uint32_t last_ping_ms = 0;
     bool lan_up = false;
 
     while (s_peer) {
         esp_peer_main_loop(s_peer);
+        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
 
         if (s_ws_connected) {
-            if (++ping_ticks >= APP_PING_INTERVAL_TICKS) {
-                ping_ticks = 0;
+            /* Unsigned math handles the 49-day wrap. */
+            if (now_ms - last_ping_ms >= APP_PING_INTERVAL_MS) {
+                last_ping_ms = now_ms;
                 static const char ping[] = "{\"type\":\"ping\"}";
                 esp_err_t err = esp_websocket_client_send_text(
                     s_ws, ping, sizeof(ping) - 1, pdMS_TO_TICKS(WS_SEND_TIMEOUT_MS));
@@ -196,17 +230,22 @@ static void peer_task(void *arg)
                     ESP_LOGW(TAG, "ping send failed: 0x%x", err);
                 }
             }
-            offline_ticks = 0;
             if (lan_up) {
                 /* Cloud is back - stop serving the LAN stream. (The ws
-                 * event handler already switched the LED back to solid.) */
+                 * event handler already switched the LED to solid.) */
                 lan_stream_stop();
                 lan_up = false;
+                s_lan_active = false;
             }
-        } else if (!lan_up && ++offline_ticks >= LAN_FALLBACK_TICKS) {
+        } else if (!lan_up && now_ms - s_disconnected_at_ms >= LAN_FALLBACK_MS) {
             if (lan_stream_start(s_device_id) == ESP_OK) {
                 lan_up = true;
-                led_set_pattern(LED_PATTERN_SLOW_BLINK);
+                s_lan_active = true;
+                led_update();
+            } else {
+                /* Back off for another full window instead of retrying
+                 * every loop tick (httpd_start failures log every time). */
+                s_disconnected_at_ms = now_ms;
             }
         }
 
@@ -425,12 +464,13 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
         case WEBSOCKET_EVENT_CONNECTED:
             ESP_LOGI(TAG, "Signaling WebSocket connected");
             s_ws_connected = true;
-            led_set_pattern(LED_PATTERN_SOLID);
+            led_update();
             break;
         case WEBSOCKET_EVENT_DISCONNECTED:
             ESP_LOGW(TAG, "Signaling WebSocket disconnected");
             s_ws_connected = false;
-            led_set_pattern(LED_PATTERN_FAST_FLASH);
+            s_disconnected_at_ms = (uint32_t)(esp_timer_get_time() / 1000);
+            led_update();
             esp_peer_disconnect(s_peer);
             s_dc_open = false;
             break;
@@ -442,7 +482,8 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
         case WEBSOCKET_EVENT_ERROR:
             ESP_LOGE(TAG, "Signaling WebSocket error");
             s_ws_connected = false;
-            led_set_pattern(LED_PATTERN_FAST_FLASH);
+            s_disconnected_at_ms = (uint32_t)(esp_timer_get_time() / 1000);
+            led_update();
             break;
         default:
             break;
@@ -514,11 +555,42 @@ esp_err_t webrtc_stream_init(const device_config_t *cfg, const char *device_id)
     snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s\r\n",
              cfg->auth_token);
 
+    /* Build the TLS transport ourselves and pin its address family to IPv4.
+     * Cloudflare's front publishes AAAA records for the backend host; with
+     * lwIP caching only the first DNS answer, the device can end up holding
+     * just an IPv6 address and then every connect dies on a network whose
+     * IPv6 is not actually usable (field-verified 2026-09-03: 10 s connect
+     * timeout loop while IPv4 clients on the same network worked fine).
+     * CONFIG_LWIP_IPV6 must stay enabled because esp_peer compiles against
+     * IPv6 socket types, so the IPv4-only rule is applied here instead -
+     * getaddrinfo() then only ever returns an A record for this host. */
+    esp_transport_handle_t ssl_transport = esp_transport_ssl_init();
+    if (!ssl_transport) {
+        ESP_LOGE(TAG, "Failed to create signaling TLS transport");
+        esp_peer_close(s_peer);
+        s_peer = NULL;
+        return ESP_FAIL;
+    }
+    /* Same cert policy the client config used before: verify the Worker's
+     * certificate against the bundled CA store. */
+    esp_transport_ssl_crt_bundle_attach(ssl_transport, esp_crt_bundle_attach);
+    esp_transport_ssl_set_addr_family(ssl_transport, ESP_TLS_AF_INET);
+    esp_transport_handle_t ws_transport = esp_transport_ws_init(ssl_transport);
+    if (!ws_transport) {
+        ESP_LOGE(TAG, "Failed to create signaling WS transport");
+        esp_transport_destroy(ssl_transport);
+        esp_peer_close(s_peer);
+        s_peer = NULL;
+        return ESP_FAIL;
+    }
+    s_ws_ssl_transport = ssl_transport;
+    s_ws_transport = ws_transport;
+
     esp_websocket_client_config_t websocket_cfg = {
         .uri = uri,
-        /* The Worker is only reachable over TLS; verify against the bundled
-         * CA store (same pattern as ota.c). */
-        .crt_bundle_attach = esp_crt_bundle_attach,
+        /* Hand the client our own wss transport (cert bundle + IPv4 pin are
+         * on it); the client must not build its own. */
+        .ext_transport = ws_transport,
         /* The Worker authenticates devices by this header on the handshake;
          * the shared token never appears in the URI or any URL. */
         .headers = auth_header,
@@ -548,6 +620,10 @@ esp_err_t webrtc_stream_init(const device_config_t *cfg, const char *device_id)
         ESP_LOGE(TAG, "Failed to start WebSocket client: 0x%x", err);
         esp_websocket_client_destroy(s_ws);
         s_ws = NULL;
+        esp_transport_destroy(s_ws_transport);
+        esp_transport_destroy(s_ws_ssl_transport);
+        s_ws_transport = NULL;
+        s_ws_ssl_transport = NULL;
         esp_peer_close(s_peer);
         s_peer = NULL;
         return ESP_FAIL;
@@ -558,6 +634,10 @@ esp_err_t webrtc_stream_init(const device_config_t *cfg, const char *device_id)
         ESP_LOGE(TAG, "Failed to create peer task");
         esp_websocket_client_destroy(s_ws);
         s_ws = NULL;
+        esp_transport_destroy(s_ws_transport);
+        esp_transport_destroy(s_ws_ssl_transport);
+        s_ws_transport = NULL;
+        s_ws_ssl_transport = NULL;
         esp_peer_close(s_peer);
         s_peer = NULL;
         return ESP_FAIL;
