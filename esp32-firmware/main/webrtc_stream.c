@@ -650,6 +650,30 @@ esp_err_t webrtc_stream_init(const device_config_t *cfg, const char *device_id)
         s_peer = NULL;
         return ESP_FAIL;
     }
+    /* The client never applies the URI path or the custom headers to an
+     * ext_transport: set_websocket_transport_optional_settings() looks
+     * transports up in the client's own transport_list, which our hand-built
+     * ws transport is not part of, so ws_path stays the transport's default
+     * "/" and the auth header is never attached. The handshake then went out
+     * as "GET / HTTP/1.1" with no Authorization line and the Worker answered
+     * 404 "not found" (field-verified 2026-09-03: a pktmon capture showed a
+     * 191-byte request - exactly the transport's base handshake with the
+     * default path). Apply the same ws config the client would have. */
+    char ws_path[96];
+    snprintf(ws_path, sizeof(ws_path), "/signaling/%s", device_id);
+    esp_transport_ws_config_t ws_cfg = {
+        .ws_path = ws_path,
+        .headers = auth_header,
+        .propagate_control_frames = true,
+    };
+    if (esp_transport_ws_set_config(ws_transport, &ws_cfg) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to configure signaling WS transport");
+        esp_transport_destroy(ws_transport);
+        esp_transport_destroy(parent_transport);
+        esp_peer_close(s_peer);
+        s_peer = NULL;
+        return ESP_FAIL;
+    }
     s_ws_parent_transport = parent_transport;
     s_ws_transport = ws_transport;
     ESP_LOGI(TAG, "Signaling transport: %s",

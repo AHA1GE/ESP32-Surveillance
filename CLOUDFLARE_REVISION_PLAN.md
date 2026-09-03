@@ -422,7 +422,17 @@ implemented.
   read modes; and a new local-development mode — a `ws://`/`http://` prefix
   in the backend host makes the device dial plain WS (TCP transport, no
   TLS, `:80` default) so it can talk to a desktop `wrangler dev` on the LAN
-  (config validation accepts the prefix and the port separator).
+  (config validation accepts the prefix and the port separator). Third item
+  of the pass: the handshake came back 404 from the Worker even though the
+  TCP exchange completed against the right host — a pktmon capture showed a
+  191-byte request, exactly the ws transport's base handshake with its
+  default path: the client never applies the URI path or the custom headers
+  to an ext_transport (`set_websocket_transport_optional_settings()` only
+  looks up transports in the client's own transport_list), so the request
+  line was `GET / HTTP/1.1` with no Authorization header. Fix: after
+  `esp_transport_ws_init()` the firmware calls `esp_transport_ws_set_config()`
+  itself with the `/signaling/{id}` path, the Bearer header, and
+  `propagate_control_frames` — the same config the client would have applied.
 - **CF TURN username length** — resolved by `ICE_CRED_MAX` → 128 (§3.1);
   verified against a real minted credential (exactly 128 hex chars,
   2026-09-02).
