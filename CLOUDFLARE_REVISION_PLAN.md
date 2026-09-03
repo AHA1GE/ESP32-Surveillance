@@ -396,6 +396,18 @@ implemented.
   `led_update()`), and the 30 s ping / 60 s fallback timers moved from
   peer-loop tick counting to wall clock so a stretched `esp_peer_main_loop`
   can't delay them.
+- **Server-initiated WS close zombified the device (field-verified
+  2026-09-03)** — after the Worker closed the signaling socket (its 90 s idle
+  kill during a WiFi outage, or a redeploy), the device pinged a dead
+  connection every 30 s for 30+ minutes: the client emitted
+  `WEBSOCKET_EVENT_CLOSED` (an event the handler didn't cover) and, with the
+  default `enable_close_reconnect=false`, stops reconnecting permanently.
+  The app's `s_ws_connected` stayed true, so the 60 s offline counter never
+  ran and the LAN fallback never engaged (port 80 refused). Fixes in
+  webrtc_stream.c: the CLOSED event is now handled like DISCONNECTED,
+  `enable_close_reconnect=true` makes the client reconnect after a clean
+  close, and a failed app ping cross-checks `esp_websocket_client_is_connected()`
+  and self-heals a stale flag within one 30 s cycle.
 - **CF TURN username length** — resolved by `ICE_CRED_MAX` → 128 (§3.1);
   verified against a real minted credential (exactly 128 hex chars,
   2026-09-02).

@@ -228,6 +228,19 @@ static void peer_task(void *arg)
                     s_ws, ping, sizeof(ping) - 1, pdMS_TO_TICKS(WS_SEND_TIMEOUT_MS));
                 if (err != ESP_OK) {
                     ESP_LOGW(TAG, "ping send failed: 0x%x", err);
+                    /* A failed ping can mean the client lost the connection
+                     * without our handler seeing the event (the Worker closes
+                     * cleanly on idle-kill/redeploy and the old code never
+                     * handled that). Ask the library itself: if it is not
+                     * connected, s_ws_connected is stale and the fallback
+                     * must engage. Field-verified 2026-09-03: the device
+                     * pinged a dead connection for 30+ minutes while the LAN
+                     * fallback never started. */
+                    if (!esp_websocket_client_is_connected(s_ws)) {
+                        s_ws_connected = false;
+                        s_disconnected_at_ms = now_ms;
+                        led_update();
+                    }
                 }
             }
             if (lan_up) {
@@ -474,6 +487,19 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
             esp_peer_disconnect(s_peer);
             s_dc_open = false;
             break;
+        case WEBSOCKET_EVENT_CLOSED:
+            /* Server-initiated close (the Worker's 90 s idle kill, or a
+             * redeploy): same app-level effect as a drop - signaling is
+             * gone, so stop the peer session and let the fallback timer
+             * run. The client's own reconnect is governed by
+             * enable_close_reconnect in the config below. */
+            ESP_LOGW(TAG, "Signaling WebSocket closed by server");
+            s_ws_connected = false;
+            s_disconnected_at_ms = (uint32_t)(esp_timer_get_time() / 1000);
+            led_update();
+            esp_peer_disconnect(s_peer);
+            s_dc_open = false;
+            break;
         case WEBSOCKET_EVENT_DATA:
             /* One event carries a whole signaling message: buffer_size (8KB)
              * exceeds the largest SDP/JSON the backend sends us. */
@@ -597,6 +623,11 @@ esp_err_t webrtc_stream_init(const device_config_t *cfg, const char *device_id)
         /* The backend's registry holds the device slot; after a drop,
          * reconnect promptly so the device reappears online. */
         .reconnect_timeout_ms = 3000,
+        /* Also reconnect after a CLEAN server close (the Worker's 90 s
+         * idle kill or a redeploy) - the client's default here is to give
+         * up permanently, which field-verified 2026-09-03 turned the
+         * device into a zombie that pinged a dead connection forever. */
+        .enable_close_reconnect = true,
         /* Same as the component default, set explicitly to silence the
          * "using default time out" warning at boot. */
         .network_timeout_ms = 10000,
