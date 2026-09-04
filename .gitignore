@@ -8,3 +8,4 @@ Thumbs.db
 
 # Language/toolchain-specific ignores live alongside their projects:
 # esp32-firmware/.gitignore (ESP-IDF), backend/.gitignore (Go)
+.vscode/settings.json
